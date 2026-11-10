@@ -1,0 +1,12 @@
+node_modules
+dist
+coverage
+*.tgz
+.env*
+.DS_Store
+BUILD_PLAN.md
+BUILD_LOG.md
+FINDINGS.md
+CLAUDE.md
+AGENTS.md
+smoke*
