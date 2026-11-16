@@ -88,7 +88,19 @@ describe("projects API", () => {
 });
 ```
 
-`useKindeTestkit()` starts the issuer on a free port before the tests and stops it after. Point your app's issuer setting at `kinde.issuer` for the test run, so its middleware fetches keys from `kinde.jwksUri`.
+`useKindeTestkit()` starts the issuer on a free port before the tests and stops it after. Point your app's issuer setting at `kinde.issuer` for the test run, so its middleware fetches keys from the testkit instead of Kinde.
+
+## With Kinde's SDKs
+
+Kinde's JavaScript SDKs check tokens with `@kinde/jwt-validator`, which fetches keys from `<issuer>/.well-known/jwks.json` and then compares `iss` with the issuer you configured. kinde-testkit serves the same path, and its test suite runs that validator against every token kind.
+
+For the Next.js SDK, set the issuer to the testkit during tests:
+
+```bash
+KINDE_ISSUER_URL=http://localhost:4400
+```
+
+The SDK accepts a plain `http://localhost` issuer. Its `validateToken` accepts kinde-testkit tokens and rejects the wrong-issuer, tampered, unknown-key and unsigned kinds. It does not reject expired tokens, because the SDK handles expiry by refreshing the session. Signing in through the SDK's login route needs the authorization code flow, which this release does not include yet.
 
 ## Run the issuer from the command line
 
@@ -186,20 +198,22 @@ import {
 
 - `scenario()` builds a caller: `.user()`, `.organization()`, `.withoutOrganization()`, `.role()`, `.permissions()`, `.claims()`, then `.authenticated()` or `.unauthenticated()`. The result is plain JSON, so you can keep scenarios in a shared file and import them anywhere.
 - `createKindeUser()` gives a user a stable id derived from the email, so the same email always maps to the same `kp_` id. `createKindeOrganization()` and `createMembership()` cover organizations and per-organization roles.
-- `KindeTestkit.create({ issuer, audience, clientId })` holds a signing key. Use `token()`, `tokenFor(scenario)`, `idTokenFor(scenario)`, `headersFor(scenario)`, `principalFor(scenario)` and `jwks()`.
+- `KindeTestkit.create({ issuer, audience, clientId, accessTokenExpiresIn, idTokenExpiresIn })` holds a signing key. Access tokens last 24 hours and ID tokens 1 hour by default, the same as Kinde's defaults. Use `token()`, `tokenFor(scenario)`, `idTokenFor(scenario)`, `headersFor(scenario)`, `principalFor(scenario)` and `jwks()`.
 - `startKindeTestkit({ port, seed, audience })` runs the issuer in-process and returns `{ url, issuer, jwksUri, testkit, close() }`.
 - `createKindeToken(options)` signs with a shared default testkit whose issuer is `http://localhost:4400`, or `KINDE_TESTKIT_ISSUER` when set.
 - `principalFromClaims(claims)` turns verified claims into `{ subject, issuer, organization, roles, permissions }`.
 
 ## Token shape
 
-Access tokens carry the claims Kinde documents for its access tokens:
+Access tokens use the same claims as a real Kinde access token:
 
 ```json
 {
+  "amr": ["email"],
   "aud": ["https://api.example.test"],
+  "auth_time": 1794346114,
   "azp": "kinde_testkit_client",
-  "exp": 1794349714,
+  "exp": 1794432514,
   "iat": 1794346114,
   "iss": "http://localhost:4400",
   "jti": "5ef5f45e-d8ac-40a5-934a-8dc9e7b98310",
@@ -211,20 +225,23 @@ Access tokens carry the claims Kinde documents for its access tokens:
 }
 ```
 
-The header is `{ "alg": "RS256", "typ": "JWT", "kid": "kinde-testkit-..." }`. Every key id starts with `kinde-testkit-`, so a test token is easy to spot in logs. ID tokens carry `email`, `email_verified`, `given_name`, `family_name`, `name`, `picture`, `org_codes` and `auth_time`.
+`org_code`, `permissions` and `roles` appear only when the scenario sets them, which is how Kinde behaves for a user with no organization or permissions. The header is `{ "alg": "RS256", "typ": "JWT", "kid": "kinde-testkit-..." }`. Every key id starts with `kinde-testkit-`, so a test token is easy to spot in logs.
+
+ID tokens carry `amr`, `aud` (the client ID), `auth_time`, `email`, `email_verified`, `given_name`, `family_name`, `name`, `picture`, `rat`, `updated_at`, and `org_codes` when the user has an organization. Empty profile fields are left out.
 
 ## What this release covers
 
 | Capability | Status |
 | --- | --- |
 | OIDC discovery document | Implemented |
-| JWKS with one RS256 key | Implemented |
+| JWKS with one RS256 key, at `/.well-known/jwks` and `/.well-known/jwks.json` | Implemented |
 | Access tokens with `org_code`, `permissions`, `roles`, `scp` | Implemented |
 | ID tokens | Implemented through the library |
 | Invalid token kinds | Implemented, 10 kinds |
 | Seeded users, organizations and memberships | Implemented |
 | Switching the active organization | Implemented, one token per organization |
 | Vitest helper | Implemented |
+| Accepted by `@kinde/jwt-validator` and the Next.js SDK's `validateToken` | Tested |
 | Authorization code flow and login page | Not implemented. `/oauth2/auth` and `/oauth2/token` return 501 |
 | Refresh tokens and logout | Not implemented |
 | Management API and Account API | Not implemented |
