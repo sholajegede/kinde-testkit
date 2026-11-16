@@ -39,6 +39,7 @@ describe("valid access tokens", () => {
     expect(protectedHeader).toMatchObject({ alg: "RS256", typ: "JWT" });
     expect(protectedHeader.kid).toMatch(/^kinde-testkit-/);
     expect(payload).toMatchObject({
+      amr: ["email"],
       iss: kinde.issuer,
       aud: [AUDIENCE],
       sub: admin.user.id,
@@ -48,7 +49,16 @@ describe("valid access tokens", () => {
     });
     expect(payload.roles).toEqual([{ id: expect.stringMatching(/^role_/), key: "admin", name: "Admin" }]);
     expect(typeof payload.jti).toBe("string");
-    expect(payload.exp! - payload.iat!).toBe(3600);
+    expect(payload.auth_time).toBe(payload.iat);
+    expect(payload.exp! - payload.iat!).toBe(86400);
+  });
+
+  it("leaves out org_code, roles and permissions when the scenario has none, as Kinde does", async () => {
+    const plain = scenario().user({ email: "plain@example.test" }).authenticated();
+    const { payload } = await verify((await kinde.testkit.tokenFor(plain)) as string);
+    expect(Object.keys(payload).sort()).toEqual(
+      ["amr", "aud", "auth_time", "azp", "exp", "iat", "iss", "jti", "scp", "sub"],
+    );
   });
 
   it("returns a principal that matches the token", async () => {
@@ -73,7 +83,10 @@ describe("valid access tokens", () => {
   it("issues an ID token with profile claims and org_codes", async () => {
     const idToken = (await kinde.testkit.idTokenFor(admin)) as string;
     const claims = decodeJwt(idToken);
+    expect(claims.exp! - claims.iat!).toBe(3600);
+    expect(claims.rat).toBe(claims.auth_time);
     expect(claims).toMatchObject({
+      amr: ["email"],
       aud: [kinde.testkit.clientId],
       email: "admin@example.test",
       email_verified: true,
@@ -83,6 +96,14 @@ describe("valid access tokens", () => {
       org_codes: ["org_acme"],
       sub: admin.user.id,
     });
+  });
+
+  it("leaves out org_codes and empty profile fields on an ID token", async () => {
+    const bare = scenario().user({ email: "bare@example.test" }).authenticated();
+    const claims = decodeJwt((await kinde.testkit.idTokenFor(bare)) as string);
+    expect(claims).not.toHaveProperty("org_codes");
+    expect(claims).not.toHaveProperty("given_name");
+    expect(claims).not.toHaveProperty("picture");
   });
 
   it("gives no token or headers to an anonymous scenario", async () => {

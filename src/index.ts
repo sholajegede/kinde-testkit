@@ -17,6 +17,7 @@ export {
   DEFAULT_CLIENT_ID,
   DEFAULT_ISSUER,
   DEFAULT_SCOPES,
+  DEFAULT_AUTH_METHODS,
   INVALID_TOKEN_KINDS,
   type KindeTestkitOptions,
   type ScenarioTokenOverrides,

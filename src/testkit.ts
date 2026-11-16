@@ -24,6 +24,7 @@ import type {
 export const DEFAULT_ISSUER = "http://localhost:4400";
 export const DEFAULT_CLIENT_ID = "kinde_testkit_client";
 export const DEFAULT_SCOPES = ["openid", "profile", "email", "offline"];
+export const DEFAULT_AUTH_METHODS = ["email"];
 
 export const INVALID_TOKEN_KINDS: readonly InvalidTokenKind[] = [
   "expired",
@@ -45,7 +46,8 @@ export interface KindeTestkitOptions {
   issuer?: string;
   audience?: string | string[];
   clientId?: string;
-  defaultExpiresIn?: Duration;
+  accessTokenExpiresIn?: Duration;
+  idTokenExpiresIn?: Duration;
   now?: () => number;
 }
 
@@ -57,14 +59,15 @@ interface SigningKey {
 
 export type ScenarioTokenOverrides = Pick<
   KindeTokenOptions,
-  "expiresIn" | "invalid" | "scopes" | "featureFlags" | "claims"
+  "expiresIn" | "invalid" | "scopes" | "featureFlags" | "claims" | "authMethods" | "authTime"
 >;
 
 export class KindeTestkit {
   readonly issuer: string;
   readonly audience: string[];
   readonly clientId: string;
-  private readonly defaultExpiresIn: Duration;
+  private readonly accessTokenExpiresIn: Duration;
+  private readonly idTokenExpiresIn: Duration;
   private readonly clock: () => number;
   private readonly signingKey: SigningKey;
   private strangerKey: Promise<SigningKey> | null = null;
@@ -77,7 +80,8 @@ export class KindeTestkit {
     this.issuer = trimSlash(options.issuer ?? DEFAULT_ISSUER);
     this.audience = toArray(options.audience);
     this.clientId = options.clientId ?? DEFAULT_CLIENT_ID;
-    this.defaultExpiresIn = options.defaultExpiresIn ?? "1h";
+    this.accessTokenExpiresIn = options.accessTokenExpiresIn ?? "24h";
+    this.idTokenExpiresIn = options.idTokenExpiresIn ?? "1h";
     this.clock = options.now ?? (() => Math.floor(Date.now() / 1000));
     this.signingKey = signingKey;
     warnIfRealKindeDomain(this.issuer);
@@ -98,17 +102,19 @@ export class KindeTestkit {
   async token(options: KindeTokenOptions = {}): Promise<string> {
     const now = this.clock();
     const payload: JWTPayload & Record<string, unknown> = {
+      amr: [...(options.authMethods ?? DEFAULT_AUTH_METHODS)],
       aud: [...this.audience],
+      auth_time: options.authTime ?? now,
       azp: this.clientId,
-      exp: now + toSeconds(options.expiresIn ?? this.defaultExpiresIn),
+      exp: now + toSeconds(options.expiresIn ?? this.accessTokenExpiresIn),
       iat: now,
       iss: this.issuer,
       jti: randomUUID(),
-      permissions: [...(options.permissions ?? [])],
-      roles: (options.roles ?? []).map(toKindeRole),
       scp: [...(options.scopes ?? DEFAULT_SCOPES)],
       sub: options.subject ?? stableId("kp", "default-test-user"),
     };
+    if (options.permissions !== undefined) payload.permissions = [...options.permissions];
+    if (options.roles !== undefined) payload.roles = options.roles.map(toKindeRole);
     if (options.organizationCode) payload.org_code = options.organizationCode;
     if (options.featureFlags) payload.feature_flags = options.featureFlags;
     Object.assign(payload, options.claims ?? {});
@@ -120,37 +126,46 @@ export class KindeTestkit {
     return this.token({
       subject: scenario.user.id,
       organizationCode: scenario.organization?.code ?? null,
-      roles: scenario.roles,
-      permissions: scenario.permissions,
+      roles: scenario.roles.length > 0 ? scenario.roles : undefined,
+      permissions: scenario.permissions.length > 0 ? scenario.permissions : undefined,
       ...overrides,
       claims: { ...scenario.claims, ...(overrides.claims ?? {}) },
     });
   }
 
-  async idTokenFor(scenario: Scenario, options: { expiresIn?: Duration } = {}): Promise<string | null> {
+  async idTokenFor(
+    scenario: Scenario,
+    options: { expiresIn?: Duration; authMethods?: string[]; authTime?: number } = {},
+  ): Promise<string | null> {
     if (scenario.kind === "unauthenticated") return null;
     const { user, organization } = scenario;
     const now = this.clock();
+    const authTime = options.authTime ?? now;
     const name = [user.givenName, user.familyName].filter(Boolean).join(" ");
     const payload: Record<string, unknown> = {
+      amr: [...(options.authMethods ?? DEFAULT_AUTH_METHODS)],
       aud: [this.clientId],
-      auth_time: now,
+      auth_time: authTime,
       azp: this.clientId,
       email: user.email,
       email_verified: user.emailVerified,
-      exp: now + toSeconds(options.expiresIn ?? this.defaultExpiresIn),
+      exp: now + toSeconds(options.expiresIn ?? this.idTokenExpiresIn),
       family_name: user.familyName,
       given_name: user.givenName,
       iat: now,
       iss: this.issuer,
       jti: randomUUID(),
       name: name || null,
-      org_codes: organization ? [organization.code] : [],
+      org_codes: organization ? [organization.code] : undefined,
       picture: user.picture,
+      rat: authTime,
       sub: user.id,
       updated_at: now,
       ...user.claims,
     };
+    for (const key of Object.keys(payload)) {
+      if (payload[key] === null || payload[key] === undefined) delete payload[key];
+    }
     return this.sign(payload);
   }
 

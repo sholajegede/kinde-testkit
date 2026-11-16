@@ -73,6 +73,8 @@ export interface KindeTokenOptions {
   scopes?: string[];
   featureFlags?: Record<string, { t: "b" | "s" | "i"; v: boolean | string | number }>;
   claims?: Record<string, unknown>;
+  authMethods?: string[];
+  authTime?: number;
   expiresIn?: Duration;
   invalid?: InvalidTokenKind;
 }
