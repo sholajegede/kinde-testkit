@@ -7,7 +7,8 @@ import type { Duration, InvalidTokenKind, KindeTokenOptions } from "./types.js";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const MAX_BODY_BYTES = 64 * 1024;
-const NOT_IMPLEMENTED = new Set(["/oauth2/auth", "/oauth2/token", "/oauth2/user_profile", "/logout"]);
+const JWKS_PATHS = new Set(["/.well-known/jwks", "/.well-known/jwks.json"]);
+const NOT_IMPLEMENTED = new Set(["/oauth2/auth", "/oauth2/token", "/oauth2/v2/user_profile", "/logout"]);
 
 export interface StartKindeTestkitOptions {
   port?: number;
@@ -92,7 +93,7 @@ async function handle(
   if (method === "GET" && pathname === "/.well-known/openid-configuration") {
     return sendJson(res, 200, discovery(testkit));
   }
-  if (method === "GET" && pathname === "/.well-known/jwks") {
+  if (method === "GET" && JWKS_PATHS.has(pathname)) {
     return sendJson(res, 200, testkit.jwks());
   }
   if (method === "GET" && pathname === "/testkit/health") {
@@ -125,7 +126,7 @@ function discovery(testkit: KindeTestkit): Record<string, unknown> {
     issuer: base,
     authorization_endpoint: `${base}/oauth2/auth`,
     token_endpoint: `${base}/oauth2/token`,
-    userinfo_endpoint: `${base}/oauth2/user_profile`,
+    userinfo_endpoint: `${base}/oauth2/v2/user_profile`,
     end_session_endpoint: `${base}/logout`,
     jwks_uri: `${base}/.well-known/jwks`,
     response_types_supported: ["code"],

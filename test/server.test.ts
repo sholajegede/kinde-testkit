@@ -50,6 +50,12 @@ describe("discovery", () => {
     expect(jwks.keys[0]).not.toHaveProperty("d");
   });
 
+  it("serves the JWKS at /.well-known/jwks.json, the path Kinde's SDKs fetch", async () => {
+    const plain = await (await fetch(kinde.jwksUri)).json();
+    const json = await (await fetch(`${kinde.url}/.well-known/jwks.json`)).json();
+    expect(json).toEqual(plain);
+  });
+
   it("answers 501 for flows this release does not implement", async () => {
     const response = await fetch(`${kinde.url}/oauth2/token`, { method: "POST" });
     expect(response.status).toBe(501);
