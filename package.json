@@ -27,7 +27,7 @@
     "LICENSE"
   ],
   "bin": {
-    "kinde-testkit": "./dist/cli.js"
+    "kinde-testkit": "dist/cli.js"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
