@@ -21,6 +21,7 @@ export {
   INVALID_TOKEN_KINDS,
   type KindeTestkitOptions,
   type ScenarioTokenOverrides,
+  type IdTokenOptions,
 } from "./testkit.js";
 export {
   startKindeTestkit,

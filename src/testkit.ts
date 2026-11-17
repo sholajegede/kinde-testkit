@@ -5,6 +5,7 @@ import {
   calculateJwkThumbprint,
   exportJWK,
   generateKeyPair,
+  jwtVerify,
   type CryptoKey,
   type JWK,
   type JWTPayload,
@@ -54,13 +55,30 @@ export interface KindeTestkitOptions {
 interface SigningKey {
   kid: string;
   privateKey: CryptoKey;
+  publicKey: CryptoKey;
   publicJwk: JWK;
 }
 
 export type ScenarioTokenOverrides = Pick<
   KindeTokenOptions,
-  "expiresIn" | "invalid" | "scopes" | "featureFlags" | "claims" | "authMethods" | "authTime"
+  | "expiresIn"
+  | "invalid"
+  | "scopes"
+  | "featureFlags"
+  | "claims"
+  | "authMethods"
+  | "authTime"
+  | "clientId"
+  | "audience"
 >;
+
+export interface IdTokenOptions {
+  expiresIn?: Duration;
+  authMethods?: string[];
+  authTime?: number;
+  clientId?: string;
+  nonce?: string;
+}
 
 export class KindeTestkit {
   readonly issuer: string;
@@ -95,6 +113,18 @@ export class KindeTestkit {
     return this.signingKey.kid;
   }
 
+  get accessTokenLifetime(): number {
+    return toSeconds(this.accessTokenExpiresIn);
+  }
+
+  async verify(token: string): Promise<JWTPayload> {
+    const { payload } = await jwtVerify(token, this.signingKey.publicKey, {
+      issuer: this.issuer,
+      algorithms: ["RS256"],
+    });
+    return payload;
+  }
+
   jwks(): { keys: JWK[] } {
     return { keys: [{ ...this.signingKey.publicJwk }] };
   }
@@ -103,9 +133,9 @@ export class KindeTestkit {
     const now = this.clock();
     const payload: JWTPayload & Record<string, unknown> = {
       amr: [...(options.authMethods ?? DEFAULT_AUTH_METHODS)],
-      aud: [...this.audience],
+      aud: [...(options.audience ?? this.audience)],
       auth_time: options.authTime ?? now,
-      azp: this.clientId,
+      azp: options.clientId ?? this.clientId,
       exp: now + toSeconds(options.expiresIn ?? this.accessTokenExpiresIn),
       iat: now,
       iss: this.issuer,
@@ -133,20 +163,18 @@ export class KindeTestkit {
     });
   }
 
-  async idTokenFor(
-    scenario: Scenario,
-    options: { expiresIn?: Duration; authMethods?: string[]; authTime?: number } = {},
-  ): Promise<string | null> {
+  async idTokenFor(scenario: Scenario, options: IdTokenOptions = {}): Promise<string | null> {
     if (scenario.kind === "unauthenticated") return null;
     const { user, organization } = scenario;
     const now = this.clock();
     const authTime = options.authTime ?? now;
     const name = [user.givenName, user.familyName].filter(Boolean).join(" ");
+    const clientId = options.clientId ?? this.clientId;
     const payload: Record<string, unknown> = {
       amr: [...(options.authMethods ?? DEFAULT_AUTH_METHODS)],
-      aud: [this.clientId],
+      aud: [clientId],
       auth_time: authTime,
-      azp: this.clientId,
+      azp: clientId,
       email: user.email,
       email_verified: user.emailVerified,
       exp: now + toSeconds(options.expiresIn ?? this.idTokenExpiresIn),
@@ -156,6 +184,7 @@ export class KindeTestkit {
       iss: this.issuer,
       jti: randomUUID(),
       name: name || null,
+      nonce: options.nonce,
       org_codes: organization ? [organization.code] : undefined,
       picture: user.picture,
       rat: authTime,
@@ -265,7 +294,7 @@ async function createSigningKey(prefix: string): Promise<SigningKey> {
   const { privateKey, publicKey } = await generateKeyPair("RS256");
   const jwk = await exportJWK(publicKey);
   const kid = `${prefix}-${(await calculateJwkThumbprint(jwk)).slice(0, 16)}`;
-  return { kid, privateKey, publicJwk: { ...jwk, kid, alg: "RS256", use: "sig" } };
+  return { kid, privateKey, publicKey, publicJwk: { ...jwk, kid, alg: "RS256", use: "sig" } };
 }
 
 function tamperSignature(jwt: string): string {

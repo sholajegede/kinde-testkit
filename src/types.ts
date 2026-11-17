@@ -75,6 +75,8 @@ export interface KindeTokenOptions {
   claims?: Record<string, unknown>;
   authMethods?: string[];
   authTime?: number;
+  clientId?: string;
+  audience?: string[];
   expiresIn?: Duration;
   invalid?: InvalidTokenKind;
 }
