@@ -8,7 +8,7 @@ import type { TestkitSeed } from "./seed.js";
 const DEFAULT_URL = process.env.KINDE_TESTKIT_URL ?? "http://localhost:4400";
 const DEFAULT_SEED_FILE = "kinde-testkit.json";
 
-const HELP = `kinde-testkit: a local issuer for testing Kinde-authenticated apps
+const HELP = `kinde-testkit: a local Kinde issuer for testing apps
 
 Usage
   kinde-testkit start [options]          Start the local issuer
@@ -111,6 +111,7 @@ async function start(args: string[]): Promise<void> {
         `Issuer:        ${running.issuer}`,
         `Discovery:     ${running.discoveryUrl}`,
         `JWKS:          ${running.jwksUri}`,
+        `Sign-in page:  ${running.url}/oauth2/auth`,
         `Token:         POST ${running.url}/testkit/token`,
         "",
         `Seed:          ${seedPath ? resolve(seedPath) : "none"}`,

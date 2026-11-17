@@ -56,9 +56,10 @@ describe("discovery", () => {
     expect(json).toEqual(plain);
   });
 
-  it("answers 501 for flows this release does not implement", async () => {
+  it("rejects a token request with no client", async () => {
     const response = await fetch(`${kinde.url}/oauth2/token`, { method: "POST" });
-    expect(response.status).toBe(501);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: "invalid_client" });
   });
 });
 

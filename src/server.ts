@@ -3,12 +3,12 @@ import type { AddressInfo } from "node:net";
 import { TestkitError } from "./errors.js";
 import { INVALID_TOKEN_KINDS, KindeTestkit } from "./testkit.js";
 import { resolveSeed, seedScenario, type ResolvedSeed, type TestkitSeed } from "./seed.js";
+import { AuthorizationServer } from "./oauth.js";
 import type { Duration, InvalidTokenKind, KindeTokenOptions } from "./types.js";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const MAX_BODY_BYTES = 64 * 1024;
 const JWKS_PATHS = new Set(["/.well-known/jwks", "/.well-known/jwks.json"]);
-const NOT_IMPLEMENTED = new Set(["/oauth2/auth", "/oauth2/token", "/oauth2/v2/user_profile", "/logout"]);
 
 export interface StartKindeTestkitOptions {
   port?: number;
@@ -42,12 +42,14 @@ export async function startKindeTestkit(
   }
   const seed = resolveSeed(options.seed ?? {});
 
-  let ready!: (testkit: KindeTestkit) => void;
-  const testkitReady = new Promise<KindeTestkit>((resolve) => (ready = resolve));
+  let ready!: (value: { testkit: KindeTestkit; auth: AuthorizationServer }) => void;
+  const testkitReady = new Promise<{ testkit: KindeTestkit; auth: AuthorizationServer }>(
+    (resolve) => (ready = resolve),
+  );
 
   const server = createServer((req, res) => {
     testkitReady
-      .then((testkit) => handle(req, res, testkit, seed))
+      .then(({ testkit, auth }) => handle(req, res, testkit, auth, seed))
       .catch((error: unknown) => sendError(res, error));
   });
 
@@ -64,7 +66,7 @@ export async function startKindeTestkit(
     audience: options.audience ?? options.seed?.audience,
     clientId: options.clientId ?? options.seed?.clientId,
   });
-  ready(testkit);
+  ready({ testkit, auth: new AuthorizationServer(testkit, seed) });
 
   return {
     url,
@@ -85,10 +87,14 @@ async function handle(
   req: IncomingMessage,
   res: ServerResponse,
   testkit: KindeTestkit,
+  auth: AuthorizationServer,
   seed: ResolvedSeed,
 ): Promise<void> {
-  const { pathname } = new URL(req.url ?? "/", "http://localhost");
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const { pathname } = url;
   const method = req.method ?? "GET";
+
+  if (await auth.handle(req, res, url, () => readForm(req))) return;
 
   if (method === "GET" && pathname === "/.well-known/openid-configuration") {
     return sendJson(res, 200, discovery(testkit));
@@ -111,12 +117,6 @@ async function handle(
     const accessToken = await issueToken(testkit, seed, body);
     return sendJson(res, 200, { access_token: accessToken, token_type: "Bearer" });
   }
-  if (NOT_IMPLEMENTED.has(pathname)) {
-    return sendJson(res, 501, {
-      error: "not_implemented",
-      error_description: `${pathname} is not part of this kinde-testkit release. Use POST /testkit/token to mint tokens.`,
-    });
-  }
   return sendJson(res, 404, { error: "not_found", error_description: `${method} ${pathname} does not exist.` });
 }
 
@@ -128,8 +128,11 @@ function discovery(testkit: KindeTestkit): Record<string, unknown> {
     token_endpoint: `${base}/oauth2/token`,
     userinfo_endpoint: `${base}/oauth2/v2/user_profile`,
     end_session_endpoint: `${base}/logout`,
+    revocation_endpoint: `${base}/oauth2/revoke`,
     jwks_uri: `${base}/.well-known/jwks`,
     response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    code_challenge_methods_supported: ["S256", "plain"],
     subject_types_supported: ["public"],
     id_token_signing_alg_values_supported: ["RS256"],
     scopes_supported: ["openid", "profile", "email", "offline"],
@@ -197,7 +200,30 @@ function optionalStrings(input: Record<string, unknown>, field: string): string[
   return value as string[];
 }
 
+async function readForm(req: IncomingMessage): Promise<Record<string, string>> {
+  const text = await readText(req);
+  if ((req.headers["content-type"] ?? "").includes("application/json")) {
+    try {
+      const parsed = JSON.parse(text || "{}") as Record<string, unknown>;
+      return Object.fromEntries(Object.entries(parsed).map(([key, value]) => [key, String(value)]));
+    } catch {
+      throw new TestkitError("INVALID_REQUEST", "The request body is not valid JSON.");
+    }
+  }
+  return Object.fromEntries(new URLSearchParams(text));
+}
+
 async function readJson(req: IncomingMessage): Promise<unknown> {
+  const text = await readText(req);
+  if (text.length === 0) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new TestkitError("INVALID_REQUEST", "The request body is not valid JSON.");
+  }
+}
+
+async function readText(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -207,13 +233,7 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
     }
     chunks.push(chunk as Buffer);
   }
-  const text = Buffer.concat(chunks).toString("utf8").trim();
-  if (text.length === 0) return {};
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new TestkitError("INVALID_REQUEST", "The request body is not valid JSON.");
-  }
+  return Buffer.concat(chunks).toString("utf8").trim();
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
