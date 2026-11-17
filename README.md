@@ -1,6 +1,11 @@
 # kinde-testkit
 
-Test apps that use Kinde without a live Kinde environment. kinde-testkit gives you test users and organizations, access tokens that look like Kinde's and are signed with a local key, and a small issuer on localhost that publishes the matching JWKS. Your app checks those tokens with the same JWT verification code it runs in production.
+Test apps that use Kinde without a live Kinde environment. kinde-testkit runs a small issuer on localhost that does what your app needs from Kinde during a test: a sign-in page with test users, the OAuth endpoints Kinde's SDKs call, and access tokens that look like Kinde's, signed with a local key. Your app runs its real Kinde SDK and its real JWT checks against it.
+
+There are two ways to use it:
+
+- **API and unit tests:** mint a token for any user, organization and permission set, including expired, tampered and unsigned tokens, and send it to your API.
+- **Browser tests:** point your app at the testkit, and Playwright signs in as any seeded user through your app's own login route.
 
 ## Why it exists
 
@@ -41,6 +46,22 @@ flowchart LR
 4. Your tests assert on what the app returns: 200, 401, 403 or 404.
 
 Nothing is mocked inside your app. If the middleware forgets to check the audience, or a route forgets to check a permission, a test fails.
+
+Browser sign-in follows the same flow your app uses with Kinde:
+
+```mermaid
+sequenceDiagram
+  participant T as Playwright test
+  participant A as Your app (Kinde SDK)
+  participant K as kinde-testkit
+  T->>A: open /api/auth/login
+  A->>K: redirect to /oauth2/auth
+  T->>K: pick admin@example.test
+  K->>A: redirect to callback with a code
+  A->>K: POST /oauth2/token (code)
+  K->>A: access, ID and refresh tokens
+  A->>T: signed-in page
+```
 
 ## Install
 
@@ -90,6 +111,77 @@ describe("projects API", () => {
 
 `useKindeTestkit()` starts the issuer on a free port before the tests and stops it after. Point your app's issuer setting at `kinde.issuer` for the test run, so its middleware fetches keys from the testkit instead of Kinde.
 
+## Browser tests with Playwright
+
+Start the testkit and your app from `playwright.config.ts`, with the app's Kinde settings pointed at the testkit:
+
+```ts
+import { defineConfig } from "@playwright/test";
+import type { KindeTestOptions } from "kinde-testkit/playwright";
+
+export default defineConfig<KindeTestOptions>({
+  use: {
+    baseURL: "http://localhost:3000",
+    kindeIssuer: "http://localhost:4400",
+  },
+  webServer: [
+    {
+      command: "npx kinde-testkit start --port 4400",
+      url: "http://localhost:4400/testkit/health",
+    },
+    {
+      command: "npm run dev",
+      url: "http://localhost:3000",
+      env: {
+        KINDE_ISSUER_URL: "http://localhost:4400",
+        KINDE_CLIENT_ID: "kinde_testkit_example",
+        KINDE_CLIENT_SECRET: "testkitexampleclientsecret0000000000000000",
+        KINDE_SITE_URL: "http://localhost:3000",
+        KINDE_POST_LOGIN_REDIRECT_URL: "http://localhost:3000",
+        KINDE_POST_LOGOUT_REDIRECT_URL: "http://localhost:3000",
+      },
+    },
+  ],
+});
+```
+
+`kinde-testkit start` loads `kinde-testkit.json` from the folder it runs in, so the seeded users are ready before the first test. The testkit accepts any client ID and secret. Kinde's Next.js SDK checks the secret's format, so use 40 to 60 letters and digits.
+
+Then write tests with the `kinde` fixture:
+
+```ts
+import { expect, test } from "kinde-testkit/playwright";
+
+test("a viewer cannot delete projects", async ({ page, kinde }) => {
+  await kinde.signInAs("viewer@example.test");
+  await page.goto("/projects");
+  await expect(page.getByRole("button", { name: /Delete/ })).toHaveCount(0);
+});
+
+test("a consultant switches organization", async ({ page, kinde }) => {
+  await kinde.signInAs("consultant@example.test", { org: "org_acme" });
+  await kinde.switchOrganization("org_globex");
+  await page.goto("/projects");
+  await expect(page.getByRole("heading", { name: "org_globex projects" })).toBeVisible();
+});
+```
+
+| Fixture method | What it does |
+| --- | --- |
+| `kinde.signInAs(email, { org })` | Opens your app's login route, signs in on the testkit page and waits until the app has the session |
+| `kinde.switchOrganization(code)` | Signs the same user in again with another active organization |
+| `kinde.signOut()` | Opens your app's logout route |
+
+The fixture uses `/api/auth/login` and `/api/auth/logout`, the Next.js SDK's routes. Set `kindeLoginPath` and `kindeLogoutPath` in `use` when your app's routes are different. Each test gets its own browser context, so tests run in parallel without sharing sessions.
+
+A user with more than one organization needs `{ org }`, otherwise the fixture stops with an error that names the user. Signing in to an organization the user does not belong to also fails, the same way Kinde refuses it.
+
+[`examples/nextjs`](examples/nextjs) is a working Next.js app on `@kinde-oss/kinde-auth-nextjs` with these tests.
+
+### The sign-in page
+
+The page at `/oauth2/auth` lists the seeded users. You can also type any email address: a user that is not in the seed file signs in without an organization. A user with more than one organization picks one on the next screen, unless the app sent `org_code`.
+
 ## With Kinde's SDKs
 
 Kinde's JavaScript SDKs check tokens with `@kinde/jwt-validator`, which fetches keys from `<issuer>/.well-known/jwks.json` and then compares `iss` with the issuer you configured. kinde-testkit serves the same path, and its test suite runs that validator against every token kind.
@@ -100,7 +192,7 @@ For the Next.js SDK, set the issuer to the testkit during tests:
 KINDE_ISSUER_URL=http://localhost:4400
 ```
 
-The SDK accepts a plain `http://localhost` issuer. Its `validateToken` accepts kinde-testkit tokens and rejects the wrong-issuer, tampered, unknown-key and unsigned kinds. It does not reject expired tokens, because the SDK handles expiry by refreshing the session. Signing in through the SDK's login route needs the authorization code flow, which this release does not include yet.
+The SDK accepts a plain `http://localhost` issuer. Its login, callback, refresh, logout and session-ending routes all work against the testkit. Its `validateToken` accepts kinde-testkit tokens and rejects the wrong-issuer, tampered, unknown-key and unsigned kinds. It does not reject expired tokens, because the SDK handles expiry by refreshing the session.
 
 ## Run the issuer from the command line
 
@@ -203,6 +295,22 @@ import {
 - `createKindeToken(options)` signs with a shared default testkit whose issuer is `http://localhost:4400`, or `KINDE_TESTKIT_ISSUER` when set.
 - `principalFromClaims(claims)` turns verified claims into `{ subject, issuer, organization, roles, permissions }`.
 
+From `kinde-testkit/playwright`: `test` and `expect` with the `kinde` fixture, the `KindeTestOptions` type for your config, and `createKindeFixture(page, options)` for building the fixture into your own `test.extend()`.
+
+## Endpoints
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /.well-known/openid-configuration` | OIDC discovery |
+| `GET /.well-known/jwks`, `/.well-known/jwks.json` | Public signing key |
+| `GET /oauth2/auth` | Sign-in page. Takes `client_id`, `redirect_uri`, `response_type=code`, `state`, `scope`, `nonce`, `audience`, `org_code`, `login_hint`, `prompt=none` and PKCE |
+| `POST /oauth2/token` | `authorization_code` and `refresh_token` grants. Client credentials in the body or with HTTP Basic. Refresh tokens rotate on every use |
+| `GET /oauth2/v2/user_profile` | Profile for the Bearer token's user |
+| `POST /oauth2/revoke` | Revokes a refresh token |
+| `GET /logout?redirect=<url>` | Signs out and redirects |
+| `POST /testkit/token` | Mints a token directly, used by `kinde-testkit token` |
+| `GET /testkit/users`, `/testkit/organizations`, `/testkit/memberships`, `/testkit/health` | Seed data and a health check |
+
 ## Token shape
 
 Access tokens use the same claims as a real Kinde access token:
@@ -236,17 +344,18 @@ ID tokens carry `amr`, `aud` (the client ID), `auth_time`, `email`, `email_verif
 | OIDC discovery document | Implemented |
 | JWKS with one RS256 key, at `/.well-known/jwks` and `/.well-known/jwks.json` | Implemented |
 | Access tokens with `org_code`, `permissions`, `roles`, `scp` | Implemented |
-| ID tokens | Implemented through the library |
+| ID tokens, with `nonce` | Implemented |
 | Invalid token kinds | Implemented, 10 kinds |
 | Seeded users, organizations and memberships | Implemented |
-| Switching the active organization | Implemented, one token per organization |
-| Vitest helper | Implemented |
+| Switching the active organization | Implemented through `org_code` or the organization picker |
+| Authorization code flow with sign-in page, PKCE and `state` | Implemented |
+| Refresh tokens with rotation, revocation, logout and user profile | Implemented |
+| Vitest helper and Playwright fixture | Implemented |
 | Accepted by `@kinde/jwt-validator` and the Next.js SDK's `validateToken` | Tested |
-| Authorization code flow and login page | Not implemented. `/oauth2/auth` and `/oauth2/token` return 501 |
-| Refresh tokens and logout | Not implemented |
+| Sign-in, organization switching and sign-out through `@kinde-oss/kinde-auth-nextjs` | Tested in Chrome with Playwright |
+| Client credentials (machine-to-machine) grant | Not implemented |
 | Management API and Account API | Not implemented |
 | Webhooks | Not implemented |
-| Playwright fixtures | Not implemented |
 
 ## Safety
 
@@ -254,6 +363,8 @@ kinde-testkit signs a token for any identity you ask for, so it keeps to localho
 
 - The issuer binds to `127.0.0.1` and refuses any other interface unless you pass `--allow-public`.
 - It makes a new signing key every time it starts. Two running issuers never share a key.
+- It accepts any client ID, client secret and redirect URI, so it never needs your real app settings. That is only safe because it stays on localhost.
+- Codes, refresh tokens and users who sign in with an unseeded email live in memory and are gone when it stops.
 - It never reads Kinde credentials, and its tokens can never pass verification against Kinde's real JWKS.
 - If you set the issuer to an `https://*.kinde.com` address, it prints a warning, because that is almost always a mistake.
 
