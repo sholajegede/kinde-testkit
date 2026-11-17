@@ -1,0 +1,17 @@
+{
+  "users": [
+    { "id": "kp_admin", "email": "admin@example.test", "givenName": "Ada", "familyName": "Okafor" },
+    { "id": "kp_viewer", "email": "viewer@example.test" },
+    { "id": "kp_consultant", "email": "consultant@example.test" }
+  ],
+  "organizations": [
+    { "code": "org_acme", "name": "Acme Inc." },
+    { "code": "org_globex", "name": "Globex" }
+  ],
+  "memberships": [
+    { "user": "kp_admin", "organization": "org_acme", "roles": ["admin"], "permissions": ["projects:read", "projects:delete"] },
+    { "user": "kp_viewer", "organization": "org_acme", "roles": ["viewer"], "permissions": ["projects:read"] },
+    { "user": "kp_consultant", "organization": "org_acme", "roles": ["viewer"], "permissions": ["projects:read"] },
+    { "user": "kp_consultant", "organization": "org_globex", "roles": ["admin"], "permissions": ["projects:read", "projects:delete"] }
+  ]
+}

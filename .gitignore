@@ -1,5 +1,10 @@
 node_modules
 dist
+.next
+next-env.d.ts
+test-results
+playwright-report
+*.tsbuildinfo
 coverage
 *.tgz
 .env*

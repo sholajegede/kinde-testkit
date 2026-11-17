@@ -1,0 +1,24 @@
+{
+  "name": "kinde-testkit-nextjs-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start --port 3000",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@kinde-oss/kinde-auth-nextjs": "^2.13.2",
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "kinde-testkit": "file:../..",
+    "typescript": "^5.7.0"
+  }
+}
