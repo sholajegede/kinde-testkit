@@ -18,6 +18,14 @@ export default defineConfig([
     sourcemap: true,
   },
   {
+    entry: { playwright: "src/playwright.ts" },
+    format: ["esm"],
+    dts: true,
+    target: "node20",
+    external: ["@playwright/test"],
+    sourcemap: true,
+  },
+  {
     entry: { cli: "src/cli.ts" },
     format: ["esm"],
     target: "node20",
