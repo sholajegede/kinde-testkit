@@ -2,6 +2,7 @@ import { afterAll, beforeAll } from "vitest";
 import { getDefaultTestkit, type KindeTestkit, type ScenarioTokenOverrides } from "./testkit.js";
 import { startKindeTestkit, type RunningKindeTestkit, type StartKindeTestkitOptions } from "./server.js";
 import type { FailureInjector } from "./failures.js";
+import type { WebhookDispatcher } from "./webhooks.js";
 import type { KindePrincipal, Scenario } from "./types.js";
 
 export interface KindeTestAuth {
@@ -33,6 +34,7 @@ export interface KindeTestkitHandle {
   readonly jwksUri: string;
   readonly testkit: KindeTestkit;
   readonly failures: FailureInjector;
+  readonly webhooks: WebhookDispatcher;
   auth(scenario: Scenario, token?: ScenarioTokenOverrides): Promise<KindeTestAuth>;
   reset(): void;
 }
@@ -68,6 +70,9 @@ export function useKindeTestkit(options: StartKindeTestkitOptions = {}): KindeTe
     },
     get failures() {
       return current().failures;
+    },
+    get webhooks() {
+      return current().webhooks;
     },
     auth: (scenario, token) => kindeTest({ scenario, testkit: current().testkit, token }),
     reset: () => current().reset(),

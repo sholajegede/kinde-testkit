@@ -5,6 +5,14 @@ import { INVALID_TOKEN_KINDS, KindeTestkit } from "./testkit.js";
 import { resolveSeed, seedScenario, type ResolvedSeed, type TestkitSeed } from "./seed.js";
 import { AuthorizationServer } from "./oauth.js";
 import { FailureInjector, failureBody, type FailureRule } from "./failures.js";
+import {
+  BILLING_EVENT_TYPES,
+  WEBHOOK_EVENT_TYPES,
+  WebhookDispatcher,
+  type SendWebhookOptions,
+  type WebhookEndpointInput,
+  type WebhookOptions,
+} from "./webhooks.js";
 import type { Duration, InvalidTokenKind, KindeTokenOptions } from "./types.js";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -19,6 +27,7 @@ export interface StartKindeTestkitOptions {
   clientId?: string;
   seed?: TestkitSeed;
   allowPublic?: boolean;
+  webhooks?: WebhookOptions;
 }
 
 export interface RunningKindeTestkit {
@@ -29,6 +38,7 @@ export interface RunningKindeTestkit {
   testkit: KindeTestkit;
   seed: ResolvedSeed;
   failures: FailureInjector;
+  webhooks: WebhookDispatcher;
   reset(): void;
   close(): Promise<void>;
 }
@@ -68,12 +78,14 @@ export async function startKindeTestkit(
     audience: options.audience ?? options.seed?.audience,
     clientId: options.clientId ?? options.seed?.clientId,
   });
-  const auth = new AuthorizationServer(testkit, seed);
+  const webhooks = new WebhookDispatcher(testkit, seed, seed.webhooks, options.webhooks);
+  const auth = new AuthorizationServer(testkit, seed, (type, user) => webhooks.emitForUser(type, user));
   const reset = () => {
     auth.reset();
     failures.clear();
+    webhooks.reset();
   };
-  ready({ testkit, auth, seed, failures, reset });
+  ready({ testkit, auth, seed, failures, webhooks, reset });
 
   return {
     url,
@@ -83,6 +95,7 @@ export async function startKindeTestkit(
     testkit,
     seed,
     failures,
+    webhooks,
     reset,
     close: () =>
       new Promise<void>((resolve, reject) => {
@@ -97,11 +110,12 @@ interface Context {
   auth: AuthorizationServer;
   seed: ResolvedSeed;
   failures: FailureInjector;
+  webhooks: WebhookDispatcher;
   reset(): void;
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, context: Context): Promise<void> {
-  const { testkit, auth, seed, failures } = context;
+  const { testkit, auth, seed, failures, webhooks } = context;
   const url = new URL(req.url ?? "/", "http://localhost");
   const { pathname } = url;
   const method = req.method ?? "GET";
@@ -147,6 +161,21 @@ async function handle(req: IncomingMessage, res: ServerResponse, context: Contex
   }
   if (method === "DELETE" && pathname.startsWith("/testkit/failures/")) {
     const removed = failures.remove(decodeURIComponent(pathname.slice("/testkit/failures/".length)));
+    return sendJson(res, removed ? 200 : 404, { ok: removed });
+  }
+  if (method === "POST" && pathname === "/testkit/webhooks") {
+    return sendJson(res, 200, await webhooks.send((await readJson(req)) as SendWebhookOptions));
+  }
+  if (method === "GET" && pathname === "/testkit/webhooks/types") {
+    return sendJson(res, 200, { built_in: WEBHOOK_EVENT_TYPES, billing: BILLING_EVENT_TYPES });
+  }
+  if (method === "GET" && pathname === "/testkit/webhooks/deliveries") return sendJson(res, 200, webhooks.deliveries());
+  if (method === "GET" && pathname === "/testkit/webhooks/endpoints") return sendJson(res, 200, webhooks.listEndpoints());
+  if (method === "POST" && pathname === "/testkit/webhooks/endpoints") {
+    return sendJson(res, 201, webhooks.addEndpoint((await readJson(req)) as WebhookEndpointInput));
+  }
+  if (method === "DELETE" && pathname.startsWith("/testkit/webhooks/endpoints/")) {
+    const removed = webhooks.removeEndpoint(decodeURIComponent(pathname.slice("/testkit/webhooks/endpoints/".length)));
     return sendJson(res, removed ? 200 : 404, { ok: removed });
   }
   if (method === "POST" && pathname === "/testkit/reset") {

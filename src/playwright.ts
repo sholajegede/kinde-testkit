@@ -1,5 +1,6 @@
 import { test as base, expect, type Page } from "@playwright/test";
 import type { ActiveFailure, FailureRule } from "./failures.js";
+import type { SendWebhookOptions, WebhookDelivery } from "./webhooks.js";
 
 export interface KindeFixtureOptions {
   issuer: string;
@@ -19,6 +20,7 @@ export interface KindeFixture {
   signOut(): Promise<void>;
   injectFailure(rule: FailureRule): Promise<ActiveFailure>;
   clearFailures(): Promise<void>;
+  sendWebhook(options: SendWebhookOptions): Promise<WebhookDelivery[]>;
 }
 
 interface ManagedKindeFixture extends KindeFixture {
@@ -103,6 +105,10 @@ export function createKindeFixture(page: Page, options: KindeFixtureOptions): Ma
     async clearFailures() {
       await Promise.all([...injected].map((id) => control(`/testkit/failures/${id}`, { method: "DELETE" })));
       injected.clear();
+    },
+    async sendWebhook(webhook: SendWebhookOptions) {
+      const response = await control("/testkit/webhooks", { method: "POST", body: JSON.stringify(webhook) });
+      return (await response.json()) as WebhookDelivery[];
     },
     async dispose() {
       if (injected.size > 0) await this.clearFailures();

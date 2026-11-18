@@ -33,6 +33,19 @@ export {
 export { resolveSeed, seedScenario, type ResolvedSeed, type TestkitSeed } from "./seed.js";
 export { TestkitError, type TestkitErrorCode } from "./errors.js";
 export { FailureInjector, type ActiveFailure, type FailureRule } from "./failures.js";
+export {
+  WebhookDispatcher,
+  WEBHOOK_EVENT_TYPES,
+  BILLING_EVENT_TYPES,
+  type SendWebhookOptions,
+  type WebhookAttempt,
+  type WebhookDelivery,
+  type WebhookEndpoint,
+  type WebhookEndpointInput,
+  type WebhookInvalidKind,
+  type WebhookOptions,
+  type WebhookSource,
+} from "./webhooks.js";
 export { inspectToken, type Check, type CheckStatus, type TokenInspection } from "./inspect.js";
 export { runDoctor, parseEnvFile, type DoctorReport } from "./doctor.js";
 export type {

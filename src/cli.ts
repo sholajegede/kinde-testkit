@@ -21,6 +21,7 @@ Usage
   kinde-testkit doctor [options]         Check your app's Kinde settings against the issuer
   kinde-testkit fail <path> [options]    Make an endpoint fail, slow down or hang
   kinde-testkit reset                    Clear sign-in sessions and failure rules
+  kinde-testkit webhook <type> [options] Send a signed webhook event
 
 start
   --port <n>            Port to listen on (default 4400)
@@ -30,6 +31,7 @@ start
   --client-id <id>      Value for azp
   --seed <file>         Seed file (default ./kinde-testkit.json when it exists)
   --allow-public        Allow binding to a non-loopback interface
+  --webhook <url>       Send webhooks to this URL (repeatable)
 
 token
   --url <url>           Running issuer (default ${DEFAULT_URL})
@@ -65,6 +67,18 @@ fail <path>             An exact path such as /oauth2/token, or a prefix such as
   --method <verb>       Only match this method
   --list                Show active rules
   --clear               Remove all rules
+
+webhook <type>          Any event type, such as user.created or customer.plan_assigned
+  --user <id|email>     Seeded user, for user.*, subscriber.* and access_request.*
+  --org <code>          Organization, for organization.*
+  --role <key>          Role, for role.*
+  --permission <key>    Permission, for permission.*
+  --data <json>         The event's data object. Needed for billing events
+  --to <url>            Send to this URL instead of the configured endpoints
+  --duplicate <n>       Send n copies with the same webhook-id
+  --invalid <kind>      bad-signature, unknown-key, unsigned or stale
+  --types               List the event types with built-in payloads
+  --deliveries          Show the delivery log
 `;
 
 async function main(argv: string[]): Promise<void> {
@@ -87,6 +101,9 @@ async function main(argv: string[]): Promise<void> {
       return fail(rest);
     case "reset":
       return reset(rest);
+    case "webhook":
+    case "webhooks":
+      return webhook(rest);
     case undefined:
     case "help":
     case "--help":
@@ -109,11 +126,13 @@ async function start(args: string[]): Promise<void> {
       "client-id": { type: "string" },
       seed: { type: "string" },
       "allow-public": { type: "boolean" },
+      webhook: { type: "string", multiple: true },
       json: { type: "boolean" },
     },
   });
   const seedPath = values.seed ?? (existsSync(DEFAULT_SEED_FILE) ? DEFAULT_SEED_FILE : undefined);
-  const seed = seedPath ? readSeed(seedPath) : undefined;
+  const seed: TestkitSeed | undefined = seedPath ? readSeed(seedPath) : values.webhook ? {} : undefined;
+  if (seed && values.webhook) seed.webhooks = [...(seed.webhooks ?? []), ...values.webhook.map((url) => ({ url }))];
 
   const running = await startKindeTestkit({
     port: values.port ? Number(values.port) : undefined,
@@ -153,6 +172,7 @@ async function start(args: string[]): Promise<void> {
         `Seed:          ${seedPath ? resolve(seedPath) : "none"}`,
         `Users:         ${running.seed.users.length}`,
         `Organizations: ${running.seed.organizations.length}`,
+        `Webhooks:      ${running.webhooks.listEndpoints().map((e) => e.url).join(", ") || "none"}`,
         "",
         "Test tokens only. Press Ctrl+C to stop.",
         "",
@@ -349,6 +369,84 @@ async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   return Buffer.concat(chunks).toString("utf8");
+}
+
+async function webhook(args: string[]): Promise<void> {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      url: { type: "string" },
+      user: { type: "string" },
+      org: { type: "string" },
+      role: { type: "string" },
+      permission: { type: "string" },
+      data: { type: "string" },
+      to: { type: "string" },
+      duplicate: { type: "string" },
+      invalid: { type: "string" },
+      types: { type: "boolean" },
+      deliveries: { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  });
+  const base = values.url ?? DEFAULT_URL;
+  if (values.types) {
+    const types = (await request(base, "/testkit/webhooks/types")) as { built_in: string[]; billing: string[] };
+    process.stdout.write(
+      values.json
+        ? `${JSON.stringify(types)}\n`
+        : `Built-in payloads:\n${types.built_in.map((t) => `  ${t}`).join("\n")}\n\nBilling events (pass --data):\n${types.billing.map((t) => `  ${t}`).join("\n")}\n`,
+    );
+    return;
+  }
+  if (values.deliveries || positionals.length === 0) {
+    const log = (await request(base, "/testkit/webhooks/deliveries")) as Array<Record<string, unknown>>;
+    if (values.json) {
+      process.stdout.write(`${JSON.stringify(log)}\n`);
+    } else if (log.length === 0) {
+      process.stdout.write("No webhooks sent yet.\n");
+    } else {
+      for (const delivery of log) process.stdout.write(`${describeDelivery(delivery)}\n`);
+    }
+    return;
+  }
+  let data: unknown;
+  if (values.data !== undefined) {
+    try {
+      data = JSON.parse(values.data);
+    } catch {
+      throw new TestkitError("INVALID_REQUEST", "--data must be a JSON object, for example '{\"customer_id\":\"c_1\"}'.");
+    }
+  }
+  const deliveries = (await request(base, "/testkit/webhooks", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      type: positionals[0],
+      user: values.user,
+      organization: values.org,
+      role: values.role,
+      permission: values.permission,
+      data,
+      to: values.to,
+      duplicate: values.duplicate !== undefined ? Number(values.duplicate) : undefined,
+      invalid: values.invalid,
+    }),
+  })) as Array<Record<string, unknown>>;
+  if (values.json) {
+    process.stdout.write(`${JSON.stringify(deliveries)}\n`);
+    return;
+  }
+  for (const delivery of deliveries) process.stdout.write(`${describeDelivery(delivery)}\n`);
+  if (deliveries.some((d) => !d.delivered)) process.exitCode = 1;
+}
+
+function describeDelivery(delivery: Record<string, unknown>): string {
+  const attempts = (delivery.attempts as Array<{ status: number | null; error: string | null }>) ?? [];
+  const outcome = attempts.map((a) => (a.status === null ? "no answer" : String(a.status))).join(", ");
+  const mark = delivery.delivered ? "✓" : "✗";
+  return `${mark} ${String(delivery.type)} to ${String(delivery.url)} (${String(delivery.webhookId)}): ${outcome}`;
 }
 
 function describeRule(rule: Record<string, unknown>): string {

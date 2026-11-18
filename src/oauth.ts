@@ -6,6 +6,8 @@ import { DEFAULT_SCOPES, type KindeTestkit } from "./testkit.js";
 import { renderMessage, renderOrganizationPicker, renderSignIn } from "./login-page.js";
 import type { AuthenticatedScenario, KindeOrganization, KindeUser } from "./types.js";
 
+export type UserEventEmitter = (type: "user.created" | "user.authenticated", user: KindeUser) => void;
+
 const CODE_LIFETIME_MS = 10 * 60 * 1000;
 
 interface AuthorizeRequest {
@@ -55,6 +57,7 @@ export class AuthorizationServer {
   constructor(
     private readonly testkit: KindeTestkit,
     private readonly seed: ResolvedSeed,
+    private readonly emit: UserEventEmitter = () => undefined,
   ) {}
 
   async handle(req: IncomingMessage, res: ServerResponse, url: URL, readBody: () => Promise<Record<string, string>>): Promise<boolean> {
@@ -177,6 +180,7 @@ export class AuthorizationServer {
       codeChallengeMethod: request.codeChallengeMethod,
       expiresAt: Date.now() + CODE_LIFETIME_MS,
     });
+    this.emit("user.authenticated", user);
     const target = new URL(request.redirectUri);
     target.searchParams.set("code", code);
     if (request.state !== null) target.searchParams.set("state", request.state);
@@ -359,8 +363,11 @@ export class AuthorizationServer {
     if (seeded) return seeded;
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ref)) return null;
     const user = createKindeUser({ email: ref.toLowerCase() });
-    this.signedUpUsers.set(user.id, user);
-    return user;
+    if (!this.signedUpUsers.has(user.id)) {
+      this.signedUpUsers.set(user.id, user);
+      this.emit("user.created", user);
+    }
+    return this.signedUpUsers.get(user.id)!;
   }
 
   private organization(code: string): KindeOrganization | null {
