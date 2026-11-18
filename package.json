@@ -1,6 +1,6 @@
 {
   "name": "kinde-testkit",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Test Kinde-authenticated apps offline: a local issuer with a real sign-in flow, Kinde-shaped tokens, reusable auth scenarios, and Vitest and Playwright helpers.",
   "license": "MIT",
   "author": "Shola Jegede <jegedeshola@gmail.com>",

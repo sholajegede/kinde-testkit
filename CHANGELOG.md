@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- Show the README diagrams as images, so they display on npm as well as GitHub.
+
 ## 0.2.1
 
 - Add CI on GitHub Actions: typecheck, tests and build on Node 22 and 24, a runtime check of the built package on Node 20, and the Next.js example's browser tests.
