@@ -1,6 +1,6 @@
 {
   "name": "kinde-testkit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Test Kinde-authenticated apps offline: a local issuer with a real sign-in flow, Kinde-shaped tokens, reusable auth scenarios, and Vitest and Playwright helpers.",
   "license": "MIT",
   "author": "Shola Jegede <jegedeshola@gmail.com>",
@@ -71,8 +71,8 @@
     "jose": "^6.2.17"
   },
   "peerDependencies": {
-    "vitest": ">=2",
-    "@playwright/test": ">=1.40"
+    "@playwright/test": ">=1.40",
+    "vitest": ">=2"
   },
   "peerDependenciesMeta": {
     "vitest": {
@@ -88,6 +88,9 @@
     "@types/node": "^22.10.0",
     "tsup": "^8.3.5",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^5.1.0"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
   }
 }
