@@ -91,7 +91,7 @@ export function failureBody(status: number): { error: string; error_description:
 export function malformedBody(kind: MalformedKind): { contentType: string; body: string } {
   switch (kind) {
     case "invalid-json":
-      return { contentType: "application/json", body: '{"access_token":"eyJhbGciOiJSUzI1NiJ9.' };
+      return { contentType: "application/json", body: '{"access_token":' };
     case "empty":
       return { contentType: "application/json", body: "" };
     case "html":
