@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Add CI on GitHub Actions: typecheck, tests and build on Node 22 and 24, a runtime check of the built package on Node 20, and the Next.js example's browser tests.
+- Upgrade the development toolchain to Vitest 5 and esbuild 0.28. Nothing changes in the published package.
+
 ## 0.2.0
 
 - Add the authorization code flow: a sign-in page at `/oauth2/auth` with seeded users, an organization picker, `org_code`, `login_hint`, `nonce`, `audience`, PKCE and `prompt=none`.

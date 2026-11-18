@@ -1,5 +1,7 @@
 # kinde-testkit
 
+[![CI](https://github.com/sholajegede/kinde-testkit/actions/workflows/ci.yml/badge.svg)](https://github.com/sholajegede/kinde-testkit/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/kinde-testkit)](https://www.npmjs.com/package/kinde-testkit)
+
 Test apps that use Kinde without a live Kinde environment. kinde-testkit runs a small issuer on localhost that does what your app needs from Kinde during a test: a sign-in page with test users, the OAuth endpoints Kinde's SDKs call, and access tokens that look like Kinde's, signed with a local key. Your app runs its real Kinde SDK and its real JWT checks against it.
 
 There are two ways to use it:
@@ -69,7 +71,7 @@ sequenceDiagram
 npm install --save-dev kinde-testkit
 ```
 
-Node 20 or later.
+Node 20 or later. Working on kinde-testkit itself needs Node 22.12 or later, because its test runner, Vitest 5, does.
 
 ## Quick start with Vitest
 
