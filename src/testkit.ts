@@ -24,6 +24,7 @@ import type {
 
 export const DEFAULT_ISSUER = "http://localhost:4400";
 export const DEFAULT_CLIENT_ID = "kinde_testkit_client";
+export const DEFAULT_M2M_CLIENT_ID = "kinde_testkit_m2m";
 export const DEFAULT_SCOPES = ["openid", "profile", "email", "offline"];
 export const DEFAULT_AUTH_METHODS = ["email"];
 
@@ -71,6 +72,18 @@ export type ScenarioTokenOverrides = Pick<
   | "clientId"
   | "audience"
 >;
+
+export interface M2MTokenOptions {
+  clientId?: string;
+  organizationCode?: string | null;
+  scopes?: string[];
+  grantedScopes?: string[];
+  audience?: string[];
+  permissions?: string[];
+  claims?: Record<string, unknown>;
+  expiresIn?: Duration;
+  invalid?: InvalidTokenKind;
+}
 
 export interface IdTokenOptions {
   expiresIn?: Duration;
@@ -147,6 +160,28 @@ export class KindeTestkit {
     if (options.roles !== undefined) payload.roles = options.roles.map(toKindeRole);
     if (options.organizationCode) payload.org_code = options.organizationCode;
     if (options.featureFlags) payload.feature_flags = options.featureFlags;
+    Object.assign(payload, options.claims ?? {});
+    return this.sign(applyInvalidClaims(payload, options.invalid, now), options.invalid);
+  }
+
+  async m2mToken(options: M2MTokenOptions = {}): Promise<string> {
+    const now = this.clock();
+    const requested = [...(options.scopes ?? [])];
+    const granted = [...(options.grantedScopes ?? requested)];
+    const payload: JWTPayload & Record<string, unknown> = {
+      aud: [...(options.audience ?? this.audience)],
+      azp: options.clientId ?? DEFAULT_M2M_CLIENT_ID,
+      exp: now + toSeconds(options.expiresIn ?? this.accessTokenExpiresIn),
+      gty: ["client_credentials"],
+      iat: now,
+      iss: this.issuer,
+      jti: randomUUID(),
+      scope: granted.join(" "),
+      scp: requested,
+      v: "2",
+    };
+    if (options.organizationCode) payload.org_code = options.organizationCode;
+    if (options.permissions !== undefined) payload.permissions = [...options.permissions];
     Object.assign(payload, options.claims ?? {});
     return this.sign(applyInvalidClaims(payload, options.invalid, now), options.invalid);
   }
@@ -233,8 +268,10 @@ export function principalFromClaims(claims: Record<string, unknown>): KindePrinc
       )
     : [];
   const permissions = Array.isArray(claims.permissions) ? claims.permissions.map(String) : [];
+  const machine = Array.isArray(claims.gty) && claims.gty.includes("client_credentials");
   return {
-    subject: String(claims.sub ?? ""),
+    type: machine ? "machine" : "user",
+    subject: String((machine ? claims.azp : claims.sub) ?? ""),
     issuer: String(claims.iss ?? ""),
     organization: typeof claims.org_code === "string" ? { code: claims.org_code } : null,
     roles: roles.filter(Boolean),
@@ -245,6 +282,7 @@ export function principalFromClaims(claims: Record<string, unknown>): KindePrinc
 
 function scenarioPrincipal(scenario: AuthenticatedScenario, issuer: string): KindePrincipal {
   return {
+    type: "user",
     subject: scenario.user.id,
     issuer,
     organization: scenario.organization ? { code: scenario.organization.code } : null,

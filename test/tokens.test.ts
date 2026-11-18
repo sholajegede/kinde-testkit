@@ -64,6 +64,7 @@ describe("valid access tokens", () => {
   it("returns a principal that matches the token", async () => {
     const auth = await kinde.auth(admin);
     expect(auth.principal).toEqual({
+      type: "user",
       subject: admin.user.id,
       issuer: kinde.issuer,
       organization: { code: "org_acme" },

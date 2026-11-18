@@ -187,13 +187,16 @@ export class AuthorizationServer {
     try {
       const clientId = clientIdFrom(req, form);
       const grantType = form.grant_type;
+      if (grantType === "client_credentials") {
+        return sendJson(res, 200, await this.clientCredentials(clientId, clientSecretFrom(req, form), form));
+      }
       let grant: Grant;
       if (grantType === "authorization_code") {
         grant = this.redeemCode(form, clientId);
       } else if (grantType === "refresh_token") {
         grant = this.redeemRefreshToken(form, clientId);
       } else {
-        throw new OAuthError(400, "unsupported_grant_type", `kinde-testkit supports authorization_code and refresh_token, not "${grantType ?? ""}".`);
+        throw new OAuthError(400, "unsupported_grant_type", `kinde-testkit supports authorization_code, refresh_token and client_credentials, not "${grantType ?? ""}".`);
       }
       sendJson(res, 200, await this.issueTokens(grant));
     } catch (error) {
@@ -202,6 +205,39 @@ export class AuthorizationServer {
       }
       throw error;
     }
+  }
+
+  private async clientCredentials(
+    clientId: string,
+    clientSecret: string | null,
+    form: Record<string, string>,
+  ): Promise<Record<string, unknown>> {
+    const app = this.seed.applications.find((a) => a.clientId === clientId);
+    if (app?.clientSecret && app.clientSecret !== clientSecret) {
+      throw new OAuthError(401, "invalid_client", `The client secret for ${clientId} is wrong.`);
+    }
+    const requested = (form.scope ?? "").split(/\s+/).filter(Boolean);
+    const granted = app?.scopes ? requested.filter((scope) => app.scopes!.includes(scope)) : requested;
+    const audience = (form.audience ?? "").split(/\s+/).filter(Boolean);
+    return {
+      access_token: await this.testkit.m2mToken({
+        clientId,
+        organizationCode: app?.organizationCode ?? null,
+        scopes: requested,
+        grantedScopes: granted,
+        audience: audience.length > 0 ? audience : (app?.audience ?? undefined),
+        permissions: app?.permissions ?? undefined,
+      }),
+      expires_in: this.testkit.accessTokenLifetime,
+      scope: granted.join(" "),
+      token_type: "bearer",
+    };
+  }
+
+  reset(): void {
+    this.codes.clear();
+    this.refreshTokens.clear();
+    this.signedUpUsers.clear();
   }
 
   private redeemCode(form: Record<string, string>, clientId: string): Grant {
@@ -392,6 +428,16 @@ function clientIdFrom(req: IncomingMessage, form: Record<string, string>): strin
   }
   if (form.client_id) return form.client_id;
   throw new OAuthError(401, "invalid_client", "Send client_id in the body or with HTTP Basic authentication.");
+}
+
+function clientSecretFrom(req: IncomingMessage, form: Record<string, string>): string | null {
+  const header = req.headers.authorization ?? "";
+  if (header.startsWith("Basic ")) {
+    const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
+    const index = decoded.indexOf(":");
+    if (index >= 0) return decodeURIComponent(decoded.slice(index + 1));
+  }
+  return form.client_secret ?? null;
 }
 
 function redirectWithError(res: ServerResponse, request: AuthorizeRequest, error: string, description: string): void {

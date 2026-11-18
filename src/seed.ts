@@ -2,6 +2,7 @@ import { createKindeOrganization, createKindeUser, createMembership } from "./fa
 import { TestkitError } from "./errors.js";
 import type {
   AuthenticatedScenario,
+  KindeApplication,
   KindeMembership,
   KindeOrganization,
   KindeUser,
@@ -31,12 +32,22 @@ export interface TestkitSeed {
     roles?: string[];
     permissions?: string[];
   }>;
+  applications?: Array<{
+    clientId: string;
+    clientSecret?: string;
+    name?: string;
+    organization?: string;
+    scopes?: string[];
+    permissions?: string[];
+    audience?: string | string[];
+  }>;
 }
 
 export interface ResolvedSeed {
   users: KindeUser[];
   organizations: KindeOrganization[];
   memberships: KindeMembership[];
+  applications: KindeApplication[];
 }
 
 export function resolveSeed(input: unknown): ResolvedSeed {
@@ -47,6 +58,7 @@ export function resolveSeed(input: unknown): ResolvedSeed {
   const rawUsers = listOf(input.users, "users", problems);
   const rawOrganizations = listOf(input.organizations, "organizations", problems);
   const rawMemberships = listOf(input.memberships, "memberships", problems);
+  const rawApplications = listOf(input.applications, "applications", problems);
 
   const users: KindeUser[] = [];
   rawUsers.forEach((raw, index) => {
@@ -106,10 +118,44 @@ export function resolveSeed(input: unknown): ResolvedSeed {
     );
   });
 
+  const applications: KindeApplication[] = [];
+  rawApplications.forEach((raw, index) => {
+    if (!isRecord(raw) || typeof raw.clientId !== "string" || raw.clientId.length === 0) {
+      problems.push(`applications[${index}] needs a string "clientId".`);
+      return;
+    }
+    if (applications.some((app) => app.clientId === raw.clientId)) {
+      problems.push(`applications[${index}] repeats the clientId "${raw.clientId}".`);
+      return;
+    }
+    if (raw.clientSecret !== undefined && typeof raw.clientSecret !== "string") {
+      problems.push(`applications[${index}].clientSecret must be a string.`);
+    }
+    if (raw.organization !== undefined && !organizations.some((org) => org.code === raw.organization)) {
+      problems.push(`applications[${index}] points to an unknown organization "${String(raw.organization)}".`);
+    }
+    for (const field of ["scopes", "permissions"] as const) {
+      const value = raw[field];
+      if (value !== undefined && (!Array.isArray(value) || value.some((v) => typeof v !== "string"))) {
+        problems.push(`applications[${index}].${field} must be a list of strings.`);
+      }
+    }
+    const audience = raw.audience;
+    applications.push({
+      clientId: raw.clientId,
+      clientSecret: typeof raw.clientSecret === "string" ? raw.clientSecret : null,
+      name: typeof raw.name === "string" ? raw.name : raw.clientId,
+      organizationCode: typeof raw.organization === "string" ? raw.organization : null,
+      scopes: Array.isArray(raw.scopes) ? (raw.scopes as string[]) : null,
+      permissions: Array.isArray(raw.permissions) ? (raw.permissions as string[]) : null,
+      audience: typeof audience === "string" ? [audience] : Array.isArray(audience) ? (audience as string[]) : null,
+    });
+  });
+
   if (problems.length > 0) {
     throw new TestkitError("SEED_INVALID", "The seed has problems. Fix them and start again.", problems);
   }
-  return { users, organizations, memberships };
+  return { users, organizations, memberships, applications };
 }
 
 export function findUser(users: KindeUser[], ref: string): KindeUser | undefined {

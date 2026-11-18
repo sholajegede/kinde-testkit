@@ -20,6 +20,16 @@ export interface KindeRole {
   name: string;
 }
 
+export interface KindeApplication {
+  clientId: string;
+  clientSecret: string | null;
+  name: string;
+  organizationCode: string | null;
+  scopes: string[] | null;
+  permissions: string[] | null;
+  audience: string[] | null;
+}
+
 export interface KindeMembership {
   userId: string;
   organizationCode: string;
@@ -43,6 +53,7 @@ export interface UnauthenticatedScenario {
 export type Scenario = AuthenticatedScenario | UnauthenticatedScenario;
 
 export interface KindePrincipal {
+  type: "user" | "machine";
   subject: string;
   issuer: string;
   organization: { code: string } | null;
