@@ -11,6 +11,8 @@ export interface UserMeta {
   createdOn: string;
   totalSignIns: number;
   lastSignedIn: string | null;
+  /** Last sign-in time per organization code. */
+  lastOrganizationSignIns: Record<string, string>;
 }
 
 export interface OrganizationMeta {
@@ -69,6 +71,7 @@ export class Directory {
         createdOn: new Date().toISOString(),
         totalSignIns: 0,
         lastSignedIn: null,
+        lastOrganizationSignIns: {},
       };
       this.userMeta.set(user.id, meta);
     }
@@ -83,7 +86,7 @@ export class Directory {
     const meta = this.meta(user);
     meta.totalSignIns += 1;
     meta.lastSignedIn = new Date().toISOString();
-    void organizationCode;
+    if (organizationCode) meta.lastOrganizationSignIns[organizationCode] = meta.lastSignedIn;
   }
 
   createUser(input: { email?: string | null; givenName?: string | null; familyName?: string | null; picture?: string | null; providedId?: string | null }): KindeUser {

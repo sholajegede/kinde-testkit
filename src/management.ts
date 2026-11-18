@@ -392,12 +392,14 @@ export class ManagementApi {
       username: null,
       last_name: user.familyName,
       first_name: user.givenName,
+      full_name: [user.givenName, user.familyName].filter(Boolean).join(" ") || null,
       is_suspended: meta.isSuspended,
       picture: user.picture,
       total_sign_ins: meta.totalSignIns,
       failed_sign_ins: 0,
       last_signed_in: meta.lastSignedIn,
       created_on: meta.createdOn,
+      last_organization_sign_ins: Object.entries(meta.lastOrganizationSignIns).map(([org_code, last_signed_in]) => ({ org_code, last_signed_in })),
       organizations: this.organizationsOf(user),
       identities: user.email ? [{ type: "email", identity: user.email }] : [],
     };
@@ -421,6 +423,7 @@ export class ManagementApi {
       is_default: false,
       external_id: meta.externalId,
       is_auto_membership_enabled: false,
+      created_on: meta.createdOn,
     };
   }
 
@@ -434,7 +437,7 @@ export class ManagementApi {
   }
 
   private permissionItem(permission: { id: string; key: string; name: string; description: string | null }) {
-    return { id: permission.id, key: permission.key, name: permission.name, description: permission.description };
+    return { id: permission.id, key: permission.key, name: permission.name, description: permission.description, is_organization_role_assignable: false };
   }
 }
 

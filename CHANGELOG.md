@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1
+
+- Management API responses now have every field a real Kinde business returns: `full_name` and `last_organization_sign_ins` on users, `created_on` on organizations in lists, and `is_organization_role_assignable` on permissions. Found by the contract tests.
+
 ## 0.7.0
 
 Found by running the new contract tests against a real Kinde business.

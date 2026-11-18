@@ -95,6 +95,14 @@ describe("access", () => {
   });
 });
 
+describe("response fields", () => {
+  it("returns the fields a real Kinde business returns, found by the contract tests", async () => {
+    expect((await api("GET", "/api/v1/users")).body.users[0]).toMatchObject({ full_name: "Ada Okafor", last_organization_sign_ins: [] });
+    expect((await api("GET", "/api/v1/organizations")).body.organizations[0]).toMatchObject({ created_on: expect.any(String) });
+    expect((await api("GET", "/api/v1/permissions")).body.permissions[0]).toMatchObject({ is_organization_role_assignable: false });
+  });
+});
+
 describe("users", () => {
   it("lists, filters and pages users", async () => {
     const all = await api("GET", "/api/v1/users");
