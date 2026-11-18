@@ -30,6 +30,7 @@ export {
   type RunningKindeTestkit,
   type StartKindeTestkitOptions,
 } from "./server.js";
+export type { DeviceFlowOptions } from "./oauth.js";
 export { resolveSeed, seedScenario, type ResolvedSeed, type TestkitSeed } from "./seed.js";
 export { TestkitError, type TestkitErrorCode } from "./errors.js";
 export { ensureLocalCertificate, createLocalCertificate, type LocalCertificate } from "./certificate.js";

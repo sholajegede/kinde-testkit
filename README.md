@@ -20,6 +20,7 @@ It also issues machine-to-machine tokens, answers the Management API and Account
 - [Browser tests with Playwright](#browser-tests-with-playwright)
 - [Browser tests with Cypress](#browser-tests-with-cypress)
 - [Machine-to-machine tokens](#machine-to-machine-tokens)
+- [Device sign-in, introspection and client registration](#device-sign-in-introspection-and-client-registration)
 - [Webhooks](#webhooks)
 - [Management API and Account API](#management-api-and-account-api)
 - [Testing outages](#testing-outages)
@@ -267,7 +268,7 @@ Seed the apps your services use:
 }
 ```
 
-A seeded app with a `clientSecret` must send that secret. A seeded app with `scopes` is granted only the requested scopes it has, so `scope` holds what was granted and `scp` holds what was asked for, as in Kinde. A client ID that is not seeded gets a token with whatever it asks for.
+A seeded app with a `clientSecret` must send that secret. A seeded app with `scopes` is granted only the requested scopes it has, so `scope` holds what was granted and `scp` holds what was asked for, as in Kinde. A seeded app with `audience` may only ask for those audiences. Any other answers `400 invalid_request` with Kinde's message, "Requested audience ... has not been whitelisted by the OAuth 2.0 Client", the error you get in Kinde when an API is not authorized for the app. A client ID that is not seeded gets a token with whatever it asks for.
 
 Your service fetches a token the same way it does from Kinde:
 
@@ -278,6 +279,33 @@ curl -s -X POST http://localhost:4400/oauth2/token \
 ```
 
 In tests, mint one directly with `testkit.m2mToken({ clientId, organizationCode, scopes, audience })`, or run `kinde-testkit token --m2m --client-id acme_agent --scope read:users`. M2M tokens take the same `invalid` kinds as user tokens. `principalFromClaims()` reads them as `{ type: "machine", subject: <client ID> }`.
+
+## Device sign-in, introspection and client registration
+
+CLIs, TV apps and agents that cannot open a browser sign in with the device authorization flow. The device asks the testkit for a code, shows it to the user, and polls `/oauth2/token` until the user approves:
+
+```bash
+curl -s -X POST http://localhost:4400/oauth2/device/auth -d client_id=my_cli -d audience=https://api.example.test
+```
+
+```json
+{ "device_code": "kinde_dc_...", "user_code": "CSLDFDUU", "verification_uri": "http://localhost:4400/device",
+  "verification_uri_complete": "http://localhost:4400/device?user_code=CSLDFDUU", "expires_in": 600, "interval": 5 }
+```
+
+The user opens `verification_uri`, enters the code and signs in on the normal sign-in page. Until then, polling answers `authorization_pending`, polling faster than `interval` answers `slow_down`, a denied device gets `access_denied` and an old code gets `expired_token`, as in Kinde. Tests can approve or deny without a browser:
+
+```bash
+curl -X POST http://localhost:4400/testkit/device -H 'content-type: application/json' \
+  -d '{"user_code":"CSLDFDUU","user":"admin@example.test","organization":"org_acme"}'
+# or {"user_code":"CSLDFDUU","action":"deny"}
+```
+
+Kinde polls every 5 seconds. Set `device: { intervalSeconds: 0 }` in `useKindeTestkit()` or `startKindeTestkit()` so tests do not wait. `expiresInSeconds` changes the code lifetime. Kinde's response also has a `qr_code` image, which the testkit leaves out.
+
+`POST /oauth2/introspect` tells a resource server whether a token is active. Like Kinde, it needs a Bearer token, which must be different from the token being checked, and answers `{ active, aud, client_id, exp, iat }` or `{ active: false }`.
+
+`POST /oauth2/register` is OAuth dynamic client registration, which Kinde offers for MCP connectors. Send `redirect_uris` and an optional `client_name` as JSON, and the testkit returns a new public `client_id`. A request with no valid redirect URIs gets Kinde's `invalid_redirect_uri` error. Kinde only accepts the redirect URIs of approved MCP clients, and it does not publish that list, so the testkit accepts any `http` or `https` redirect URI.
 
 ## Webhooks
 
@@ -578,13 +606,13 @@ Identity              6/6
 Organizations         4/5
 Permissions           5/5
 Token validation      3/8
-Sessions              4/5
+Sessions              4/6
 Machine-to-machine    0/4
 Kinde APIs            2/4
 Webhooks              5/5
 Outages               2/4
 
-Overall: 31/46
+Overall: 31/47
 
 Not covered:
   Organizations: Organization claim missing. Mint a token with invalid: "missing-organization".
@@ -706,6 +734,10 @@ From `kinde-testkit/playwright`: `test` and `expect` with the `kinde` fixture, t
 | `POST /oauth2/token` | `authorization_code`, `refresh_token` and `client_credentials` grants. Client credentials in the body or with HTTP Basic. Refresh tokens rotate on every use |
 | `GET /oauth2/v2/user_profile` | Profile for the Bearer token's user |
 | `POST /oauth2/revoke` | Revokes a refresh token |
+| `POST /oauth2/device/auth`, `GET /device` | Device authorization flow: the device code request and the page where the user enters the code |
+| `POST /oauth2/introspect` | Token introspection. Needs a Bearer token |
+| `POST /oauth2/register` | Dynamic client registration for MCP connectors |
+| `POST /testkit/device` | Approves or denies a pending device code without a browser |
 | `GET /logout?redirect=<url>` | Signs out and redirects |
 | `/api/v1/...` | Management API: users, organizations, members, roles and permissions |
 | `GET /account_api/v1/...` | Account API: permissions, roles, feature flags, properties and entitlements for the token's user |
@@ -761,6 +793,8 @@ ID tokens carry `amr`, `aud` (the client ID), `auth_time`, `email`, `email_verif
 | Switching the active organization | Implemented through `org_code` or the organization picker |
 | Authorization code flow with sign-in page, PKCE and `state` | Implemented |
 | Refresh tokens with rotation, revocation, logout and user profile | Implemented |
+| Device authorization flow, token introspection and dynamic client registration | Implemented. Error responses checked against a real Kinde business. The device response has no `qr_code` |
+| Audience allow-list for seeded M2M apps | Implemented, with Kinde's error message |
 | Vitest and Jest helpers, Playwright fixture, Cypress commands | Implemented. Jest runs in the test suite. Cypress's sign-in steps are tested against the Next.js SDK |
 | Accepted by `@kinde/jwt-validator` and the Next.js SDK's `validateToken` | Tested |
 | Sign-in, organization switching and sign-out through `@kinde-oss/kinde-auth-nextjs` | Tested in Chrome with Playwright |

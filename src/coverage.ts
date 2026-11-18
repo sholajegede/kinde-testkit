@@ -59,6 +59,7 @@ export const COVERAGE_GROUPS: CoverageGroup[] = [
       { id: "session.sign-out", label: "Sign-out", hint: "Sign out through your app's logout route." },
       { id: "session.revoke", label: "Refresh token revoked", hint: "Call /oauth2/revoke, as some SDKs do on sign-out." },
       { id: "session.silent", label: "Silent sign-in with no session", hint: "Send prompt=none and handle login_required." },
+      { id: "session.device-approved", label: "Device sign-in", hint: "Run the device authorization flow and approve it with POST /testkit/device." },
     ],
   },
   {

@@ -101,3 +101,22 @@ export function renderOrganizationPicker(options: {
 export function renderMessage(title: string, message: string): string {
   return layout(title, `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>`);
 }
+
+/** The page a user opens from a device's verification_uri. */
+export function renderDeviceCodeEntry(options: { userCode?: string; error?: string } = {}): string {
+  return layout(
+    "Connect a device",
+    `<h1>Connect a device</h1><p>Enter the code the device shows.</p>${
+      options.error ? `<div class="error" role="alert">${escapeHtml(options.error)}</div>` : ""
+    }<form method="get" action="/device"><label for="user_code">Code</label><input id="user_code" name="user_code" type="text" autocomplete="off" value="${escapeHtml(options.userCode ?? "")}" placeholder="ABCDEFGH" style="width:100%;height:42px;padding:0 12px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--ink);font:inherit;letter-spacing:.2em"><button class="primary" type="submit">Continue</button></form>`,
+  );
+}
+
+/** Asks the user to confirm the device before signing in. */
+export function renderDeviceConfirm(options: { userCode: string; clientId: string }): string {
+  const code = escapeHtml(options.userCode);
+  return layout(
+    "Connect a device",
+    `<h1>Connect a device</h1><p>A device using the app <strong>${escapeHtml(options.clientId)}</strong> wants to sign in. Check that it shows this code.</p><p class="note" style="font:600 20px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.2em;text-align:center">${code}</p><form method="get" action="/device/sign-in"><input type="hidden" name="user_code" value="${code}"><button class="primary" type="submit">Continue</button></form><form method="post" action="/device/deny"><input type="hidden" name="user_code" value="${code}"><button class="option" type="submit" style="margin-top:8px;justify-content:center">Deny</button></form>`,
+  );
+}

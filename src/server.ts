@@ -6,7 +6,7 @@ import { TestkitError } from "./errors.js";
 import { INVALID_TOKEN_KINDS, KindeTestkit } from "./testkit.js";
 import { escapeHtml } from "./login-page.js";
 import { featureFlagsFor, resolveSeed, seedScenario, type ResolvedSeed, type TestkitSeed } from "./seed.js";
-import { AuthorizationServer } from "./oauth.js";
+import { AuthorizationServer, OAuthError, type DeviceFlowOptions } from "./oauth.js";
 import { AccountApi } from "./account.js";
 import { Directory } from "./directory.js";
 import { ManagementApi } from "./management.js";
@@ -42,6 +42,8 @@ export interface StartKindeTestkitOptions {
   coverage?: boolean | { directory?: string };
   webhooks?: WebhookOptions;
   https?: boolean | { certDirectory?: string };
+  /** Device authorization flow timing. Kinde uses a 5 second interval and 600 second codes. */
+  device?: DeviceFlowOptions;
 }
 
 export interface RunningKindeTestkit {
@@ -126,7 +128,7 @@ export async function startKindeTestkit(
   const directory = new Directory(seed);
   const webhooks = new WebhookDispatcher(testkit, seed, seed.webhooks, options.webhooks);
   webhooks.observe = observe;
-  const auth = new AuthorizationServer(testkit, seed, (type, user) => webhooks.emitForUser(type, user), directory, observe);
+  const auth = new AuthorizationServer(testkit, seed, (type, user) => webhooks.emitForUser(type, user), directory, observe, options.device);
   const management = new ManagementApi(testkit, directory, webhooks);
   const account = new AccountApi(testkit, directory);
   const reset = () => {
@@ -223,7 +225,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, context: Contex
     }
   }
 
-  if (await auth.handle(req, res, url, () => readForm(req))) return;
+  if (await auth.handle(req, res, url, () => readForm(req), () => readJson(req))) return;
   if (await context.management.handle(req, res, url, async () => (await readJson(req)) as Record<string, unknown>)) {
     if (res.statusCode === 401 || res.statusCode === 403) coverage.hit("api.management-denied");
     else if (res.statusCode < 400) coverage.hit(method === "GET" ? "api.management-read" : "api.management-write");
@@ -283,6 +285,21 @@ async function handle(req: IncomingMessage, res: ServerResponse, context: Contex
   if (method === "DELETE" && pathname.startsWith("/testkit/webhooks/endpoints/")) {
     const removed = webhooks.removeEndpoint(decodeURIComponent(pathname.slice("/testkit/webhooks/endpoints/".length)));
     return sendJson(res, removed ? 200 : 404, { ok: removed });
+  }
+  if (method === "POST" && pathname === "/testkit/device") {
+    const input = (await readJson(req)) as Record<string, unknown>;
+    try {
+      auth.resolveDevice({
+        userCode: String(input.user_code ?? ""),
+        user: typeof input.user === "string" ? input.user : undefined,
+        organization: typeof input.organization === "string" ? input.organization : null,
+        deny: input.action === "deny",
+      });
+    } catch (error) {
+      if (error instanceof OAuthError) return sendJson(res, error.status, { error: error.error, error_description: error.message });
+      throw error;
+    }
+    return sendJson(res, 200, { ok: true });
   }
   if (method === "POST" && pathname === "/testkit/reset") {
     context.reset();
@@ -408,22 +425,30 @@ async function dashboard(req: IncomingMessage, res: ServerResponse, url: URL, co
 
 function discovery(testkit: KindeTestkit): Record<string, unknown> {
   const base = testkit.issuer;
+  // Kinde's discovery fields, limited to what the testkit does: it has no MFA, form_post or fragment
+  // responses, or resource indicators, so it does not advertise them.
   return {
     issuer: base,
-    authorization_endpoint: `${base}/oauth2/auth`,
-    token_endpoint: `${base}/oauth2/token`,
-    userinfo_endpoint: `${base}/oauth2/v2/user_profile`,
-    end_session_endpoint: `${base}/logout`,
-    revocation_endpoint: `${base}/oauth2/revoke`,
     jwks_uri: `${base}/.well-known/jwks`,
-    response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code", "refresh_token"],
-    code_challenge_methods_supported: ["S256", "plain"],
+    token_endpoint: `${base}/oauth2/token`,
+    claims_supported: ["aud", "exp", "iat", "iss", "sub", "acr", "amr", "auth_time"],
+    scopes_supported: ["address", "email", "offline", "openid", "phone", "profile"],
+    userinfo_endpoint: `${base}/oauth2/v2/user_profile`,
+    revocation_endpoint: `${base}/oauth2/revoke`,
+    end_session_endpoint: `${base}/logout`,
+    grant_types_supported: ["authorization_code", "refresh_token", "client_credentials", "urn:ietf:params:oauth:grant-type:device_code"],
+    registration_endpoint: `${base}/oauth2/register`,
+    authorization_endpoint: `${base}/oauth2/auth`,
+    introspection_endpoint: `${base}/oauth2/introspect`,
     subject_types_supported: ["public"],
+    response_modes_supported: ["query"],
+    response_types_supported: ["code"],
+    device_authorization_endpoint: `${base}/oauth2/device/auth`,
+    request_uri_parameter_supported: false,
+    code_challenge_methods_supported: ["S256"],
+    client_id_metadata_document_supported: false,
     id_token_signing_alg_values_supported: ["RS256"],
-    scopes_supported: ["openid", "profile", "email", "offline"],
-    token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
-    claims_supported: ["aud", "exp", "iat", "iss", "sub", "org_code", "permissions", "roles", "scp"],
+    token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
   };
 }
 

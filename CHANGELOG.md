@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0
+
+Found by running the new contract tests against a real Kinde business.
+
+- Add the device authorization flow: `POST /oauth2/device/auth`, a `/device` page where the user enters the code and signs in, polling with `authorization_pending`, `slow_down`, `access_denied` and `expired_token`, and `POST /testkit/device` to approve or deny without a browser. Change timing with the `device` option.
+- Add token introspection at `/oauth2/introspect` and dynamic client registration at `/oauth2/register`, with the same errors Kinde returns.
+- A seeded application that lists `audience` may now only request those audiences, and gets Kinde's "has not been whitelisted" error for any other.
+- The discovery document now lists the same endpoints and grant types as a Kinde business.
+- Coverage adds a device sign-in item.
+- The contract tests also compare introspection and registration errors, and explain how to authorize the Management API when Kinde refuses the M2M token.
+
 ## 0.6.1
 
 - Cut the package from 923 kB to 321 kB. The ESM entry points now share one copy of the issuer instead of each bundling its own.

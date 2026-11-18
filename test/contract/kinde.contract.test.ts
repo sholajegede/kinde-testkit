@@ -45,7 +45,12 @@ async function m2mToken(base: string, id: string, secret: string): Promise<strin
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "client_credentials", client_id: id, client_secret: secret, audience: `${base}/api` }),
   });
-  if (status !== 200) throw new Error(`${base}/oauth2/token answered ${status}: ${JSON.stringify(body)}`);
+  if (status !== 200) {
+    const hint = String(body.error_description ?? "").includes("whitelisted")
+      ? " In Kinde, open the M2M app, go to APIs, and authorize the Kinde Management API with the read scopes listed at the top of this file."
+      : "";
+    throw new Error(`${base}/oauth2/token answered ${status}: ${JSON.stringify(body)}.${hint}`);
+  }
   return body.access_token as string;
 }
 
@@ -79,6 +84,22 @@ describe.skipIf(!domain)("contract with a real Kinde business", () => {
     expect(missingFields(real.keys[0]!, local.keys[0]!)).toEqual([]);
     expect(local.keys[0]!.alg).toBe(real.keys[0]!.alg);
     expect(local.keys[0]!.kty).toBe(real.keys[0]!.kty);
+  });
+
+  it("introspection refuses a request with no Bearer token the same way", async () => {
+    const init = () => ({ method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token: "x" }) });
+    const real = await json(`${domain}/oauth2/introspect`, init());
+    const local = await json(`${testkit.url}/oauth2/introspect`, init());
+    expect(local.status).toBe(real.status);
+    expect(local.body.error).toBe(real.body.error);
+    expect(local.body.error_description).toBe(real.body.error_description);
+  });
+
+  it("registration refuses a client with no redirect URIs the same way", async () => {
+    const init = () => ({ method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const real = await json(`${domain}/oauth2/register`, init());
+    const local = await json(`${testkit.url}/oauth2/register`, init());
+    expect(local).toEqual(real);
   });
 
   describe.skipIf(!clientId || !clientSecret)("with an M2M app", () => {

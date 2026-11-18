@@ -76,7 +76,7 @@ async function signIn(email: string, org?: string) {
 
 describe("authentication coverage", () => {
   it("starts empty", () => {
-    expect(kinde.coverage.report()).toMatchObject({ covered: 0, total: 46 });
+    expect(kinde.coverage.report()).toMatchObject({ covered: 0, total: 47 });
   });
 
   it("records identity, organization and permission scenarios from minted tokens", async () => {
@@ -217,8 +217,8 @@ describe("coverage files", () => {
     recorder.hit("session.sign-in");
     const text = formatCoverageReport(recorder.report());
     expect(text).toContain("Kinde authentication coverage");
-    expect(text).toMatch(/Sessions\s+1\/5/);
-    expect(text).toContain("Overall: 1/46");
+    expect(text).toMatch(/Sessions\s+1\/6/);
+    expect(text).toContain("Overall: 1/47");
     expect(text).toContain("Sessions: Refresh. Let the app refresh its session");
   });
 });

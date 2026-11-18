@@ -1,15 +1,48 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createKindeUser } from "./factories.js";
-import { effectivePermissions, featureFlagsFor, findUser, type ResolvedSeed } from "./seed.js";
-import { DEFAULT_SCOPES, type KindeTestkit } from "./testkit.js";
-import { renderMessage, renderOrganizationPicker, renderSignIn } from "./login-page.js";
+import { effectivePermissions, featureFlagsFor, findUser, seedScenario, type ResolvedSeed } from "./seed.js";
+import { DEFAULT_CLIENT_ID, DEFAULT_SCOPES, type KindeTestkit } from "./testkit.js";
+import { renderDeviceCodeEntry, renderDeviceConfirm, renderMessage, renderOrganizationPicker, renderSignIn } from "./login-page.js";
 import type { AuthenticatedScenario, KindeOrganization, KindeUser } from "./types.js";
 import type { Directory } from "./directory.js";
 
 export type UserEventEmitter = (type: "user.created" | "user.authenticated", user: KindeUser) => void;
 
 const CODE_LIFETIME_MS = 10 * 60 * 1000;
+const DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+// Kinde uses eight letters, such as CSLDFDUU. Leave out letters that are easy to misread.
+const USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ";
+
+export interface DeviceFlowOptions {
+  /** Seconds a client must wait between polls. Kinde uses 5. Set 0 in tests that poll in a loop. */
+  intervalSeconds?: number;
+  /** Seconds before the device code expires. Kinde uses 600. */
+  expiresInSeconds?: number;
+}
+
+interface PendingDevice {
+  deviceCode: string;
+  userCode: string;
+  clientId: string;
+  scope: string[];
+  audience: string[];
+  expiresAt: number;
+  interval: number;
+  lastPollAt: number;
+  status: "pending" | "approved" | "denied";
+  grant: Grant | null;
+}
+
+interface RegisteredClient {
+  client_id: string;
+  client_id_issued_at: number;
+  client_name?: string;
+  redirect_uris: string[];
+  grant_types: string[];
+  response_types: string[];
+  token_endpoint_auth_method: "none";
+}
 
 interface AuthorizeRequest {
   clientId: string;
@@ -54,6 +87,8 @@ export class AuthorizationServer {
   private readonly codes = new Map<string, PendingCode>();
   private readonly refreshTokens = new Map<string, Grant>();
   private readonly signedUpUsers = new Map<string, KindeUser>();
+  private readonly devices = new Map<string, PendingDevice>();
+  private readonly registeredClients = new Map<string, RegisteredClient>();
 
   constructor(
     private readonly testkit: KindeTestkit,
@@ -61,11 +96,39 @@ export class AuthorizationServer {
     private readonly emit: UserEventEmitter = () => undefined,
     private readonly directory?: Directory,
     private readonly observe: (id: string) => void = () => undefined,
+    private readonly deviceOptions: DeviceFlowOptions = {},
   ) {}
 
-  async handle(req: IncomingMessage, res: ServerResponse, url: URL, readBody: () => Promise<Record<string, string>>): Promise<boolean> {
+  async handle(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+    readBody: () => Promise<Record<string, string>>,
+    readJson: () => Promise<unknown> = async () => ({}),
+  ): Promise<boolean> {
     const method = req.method ?? "GET";
     switch (`${method} ${url.pathname}`) {
+      case "POST /oauth2/device/auth":
+        this.deviceAuthorization(res, await readBody());
+        return true;
+      case "GET /device":
+        this.devicePage(res, url.searchParams);
+        return true;
+      case "GET /device/sign-in":
+        this.deviceSignIn(res, url.searchParams);
+        return true;
+      case "GET /device/complete":
+        this.deviceComplete(res, url.searchParams);
+        return true;
+      case "POST /device/deny":
+        this.deviceDeny(res, await readBody());
+        return true;
+      case "POST /oauth2/introspect":
+        await this.introspect(req, res, await readBody());
+        return true;
+      case "POST /oauth2/register":
+        this.register(res, await readJson());
+        return true;
       case "GET /oauth2/auth":
         this.authorize(res, url.searchParams);
         return true;
@@ -220,8 +283,14 @@ export class AuthorizationServer {
       } else if (grantType === "refresh_token") {
         grant = this.redeemRefreshToken(form, clientId);
         this.observe("session.refresh");
+      } else if (grantType === DEVICE_CODE_GRANT) {
+        grant = this.pollDevice(form, clientId);
       } else {
-        throw new OAuthError(400, "unsupported_grant_type", `kinde-testkit supports authorization_code, refresh_token and client_credentials, not "${grantType ?? ""}".`);
+        throw new OAuthError(
+          400,
+          "unsupported_grant_type",
+          `kinde-testkit supports authorization_code, refresh_token, client_credentials and ${DEVICE_CODE_GRANT}, not "${grantType ?? ""}".`,
+        );
       }
       sendJson(res, 200, await this.issueTokens(grant));
     } catch (error) {
@@ -248,6 +317,7 @@ export class AuthorizationServer {
         : requested.filter((scope) => app.scopes!.includes(scope))
       : requested;
     const audience = (form.audience ?? "").split(/\s+/).filter(Boolean);
+    this.checkAudience(app?.audience ?? null, audience);
     return {
       access_token: await this.testkit.m2mToken({
         clientId,
@@ -267,6 +337,213 @@ export class AuthorizationServer {
     this.codes.clear();
     this.refreshTokens.clear();
     this.signedUpUsers.clear();
+    this.devices.clear();
+    this.registeredClients.clear();
+  }
+
+  /** A seeded application that lists audiences may only ask for those, as in Kinde, where each API must be authorized for the app. */
+  private checkAudience(allowed: string[] | null, requested: string[]): void {
+    if (!allowed) return;
+    const refused = requested.find((audience) => !allowed.includes(audience));
+    if (refused) {
+      throw new OAuthError(
+        400,
+        "invalid_request",
+        `The request is missing a required parameter, includes an invalid parameter value, includes a parameter more than once, or is otherwise malformed. Requested audience '${refused}' has not been whitelisted by the OAuth 2.0 Client.`,
+      );
+    }
+  }
+
+  private deviceAuthorization(res: ServerResponse, form: Record<string, string>): void {
+    try {
+      const clientId = form.client_id || DEFAULT_CLIENT_ID;
+      const audience = (form.audience ?? "").split(/\s+/).filter(Boolean);
+      const app = this.seed.applications.find((a) => a.clientId === clientId);
+      this.checkAudience(app?.audience ?? null, audience);
+      const interval = this.deviceOptions.intervalSeconds ?? 5;
+      const expiresIn = this.deviceOptions.expiresInSeconds ?? 600;
+      const device: PendingDevice = {
+        deviceCode: `kinde_dc_${randomToken()}`,
+        userCode: userCode(),
+        clientId,
+        scope: (form.scope ?? "").split(/\s+/).filter(Boolean),
+        audience,
+        expiresAt: Date.now() + expiresIn * 1000,
+        interval,
+        lastPollAt: 0,
+        status: "pending",
+        grant: null,
+      };
+      this.devices.set(device.deviceCode, device);
+      this.observe("session.device");
+      const verification = `${this.testkit.issuer}/device`;
+      sendJson(res, 200, {
+        device_code: device.deviceCode,
+        user_code: device.userCode,
+        verification_uri: verification,
+        verification_uri_complete: `${verification}?user_code=${device.userCode}`,
+        expires_in: expiresIn,
+        interval,
+      });
+    } catch (error) {
+      if (error instanceof OAuthError) return sendJson(res, error.status, { error: error.error, error_description: error.message });
+      throw error;
+    }
+  }
+
+  private findDevice(userCode: string | null | undefined): PendingDevice | null {
+    const wanted = (userCode ?? "").toUpperCase().replace(/[^A-Z]/g, "");
+    for (const device of this.devices.values()) {
+      if (device.userCode === wanted && device.status === "pending" && device.expiresAt > Date.now()) return device;
+    }
+    return null;
+  }
+
+  private devicePage(res: ServerResponse, params: URLSearchParams): void {
+    const code = params.get("user_code");
+    if (!code) return sendHtml(res, 200, renderDeviceCodeEntry());
+    const device = this.findDevice(code);
+    if (!device) return sendHtml(res, 400, renderDeviceCodeEntry({ userCode: code, error: "That code is unknown, expired or already used." }));
+    sendHtml(res, 200, renderDeviceConfirm({ userCode: device.userCode, clientId: device.clientId }));
+  }
+
+  private deviceSignIn(res: ServerResponse, params: URLSearchParams): void {
+    const device = this.findDevice(params.get("user_code"));
+    if (!device) return sendHtml(res, 400, renderDeviceCodeEntry({ error: "That code is unknown, expired or already used." }));
+    const request: AuthorizeRequest = {
+      clientId: device.clientId,
+      redirectUri: `${this.testkit.issuer}/device/complete?user_code=${device.userCode}`,
+      state: null,
+      scope: device.scope,
+      nonce: null,
+      audience: device.audience,
+      orgCode: null,
+      loginHint: params.get("login_hint"),
+      codeChallenge: null,
+      codeChallengeMethod: null,
+    };
+    sendHtml(res, 200, renderSignIn({ request: encodeRequest(request), users: this.loginPageUsers(), loginHint: request.loginHint ?? undefined }));
+  }
+
+  private deviceComplete(res: ServerResponse, params: URLSearchParams): void {
+    const device = this.findDevice(params.get("user_code"));
+    const pending = this.codes.get(params.get("code") ?? "");
+    this.codes.delete(params.get("code") ?? "");
+    if (!device || !pending || pending.clientId !== device.clientId) {
+      return sendHtml(res, 400, renderMessage("Device not connected", "The code expired or was already used. Start again on the device."));
+    }
+    device.status = "approved";
+    device.grant = { ...pending, scope: device.scope, audience: device.audience };
+    sendHtml(res, 200, renderMessage("Device connected", "You can go back to your device. It signs in the next time it checks."));
+  }
+
+  private deviceDeny(res: ServerResponse, form: Record<string, string>): void {
+    const device = this.findDevice(form.user_code);
+    if (device) device.status = "denied";
+    sendHtml(res, 200, renderMessage("Device denied", "The device will not be signed in."));
+  }
+
+  /** Approves or denies a device without a browser. Used by POST /testkit/device. */
+  resolveDevice(input: { userCode: string; user?: string; organization?: string | null; deny?: boolean }): void {
+    const device = this.findDevice(input.userCode);
+    if (!device) throw new OAuthError(400, "invalid_request", `No pending device has the user code "${input.userCode}".`);
+    if (input.deny) {
+      device.status = "denied";
+      return;
+    }
+    if (!input.user) throw new OAuthError(400, "invalid_request", "Pass the user who approves the device.");
+    const scenario = seedScenario(this.seed, { user: input.user, organization: input.organization ?? undefined });
+    device.status = "approved";
+    device.grant = {
+      clientId: device.clientId,
+      scenario,
+      scope: device.scope,
+      audience: device.audience,
+      nonce: null,
+      authTime: Math.floor(Date.now() / 1000),
+    };
+  }
+
+  private pollDevice(form: Record<string, string>, clientId: string): Grant {
+    const device = this.devices.get(form.device_code ?? "");
+    if (!device || device.clientId !== clientId) {
+      throw new OAuthError(400, "invalid_grant", "The device code is unknown or was issued to a different client.");
+    }
+    if (device.expiresAt <= Date.now()) {
+      this.devices.delete(device.deviceCode);
+      throw new OAuthError(400, "expired_token", "The device code has expired. Request a new one.");
+    }
+    if (device.status === "denied") {
+      this.devices.delete(device.deviceCode);
+      throw new OAuthError(400, "access_denied", "The user denied the device.");
+    }
+    if (device.status === "pending") {
+      const now = Date.now();
+      const tooSoon = device.lastPollAt > 0 && now - device.lastPollAt < device.interval * 1000;
+      device.lastPollAt = now;
+      if (tooSoon) {
+        device.interval += 5;
+        throw new OAuthError(400, "slow_down", `Poll at most every ${device.interval} seconds.`);
+      }
+      throw new OAuthError(400, "authorization_pending", "The user has not finished signing in.");
+    }
+    this.devices.delete(device.deviceCode);
+    this.observe("session.device-approved");
+    return device.grant!;
+  }
+
+  private async introspect(req: IncomingMessage, res: ServerResponse, form: Record<string, string>): Promise<void> {
+    const header = req.headers.authorization ?? "";
+    if (!header.startsWith("Bearer ")) {
+      return sendJson(res, 401, { error: "request_unauthorized", error_description: "The request could not be authorized. HTTP Authorization header missing." });
+    }
+    const bearer = header.slice(7);
+    const token = form.token ?? "";
+    if (bearer === token) {
+      return sendJson(res, 401, { error: "request_unauthorized", error_description: "The request could not be authorized. Bearer and introspection token are identical." });
+    }
+    try {
+      await this.testkit.verify(bearer);
+    } catch {
+      return sendJson(res, 401, { error: "request_unauthorized", error_description: "The request could not be authorized. The Bearer token is not valid for this issuer." });
+    }
+    if (!token) return sendJson(res, 400, { error: "invalid_request", error_description: "Send the token to introspect in the token field." });
+    this.observe("token.introspect");
+    const refresh = this.refreshTokens.get(token);
+    if (refresh) return sendJson(res, 200, { active: true, client_id: refresh.clientId });
+    try {
+      const claims = await this.testkit.verify(token);
+      const aud = claims.aud === undefined ? [] : Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+      sendJson(res, 200, { active: true, aud, client_id: claims.azp ?? null, exp: claims.exp, iat: claims.iat });
+    } catch {
+      sendJson(res, 200, { active: false });
+    }
+  }
+
+  /** OAuth dynamic client registration (RFC 7591), which Kinde offers for MCP connectors. */
+  private register(res: ServerResponse, body: unknown): void {
+    const input = (typeof body === "object" && body !== null && !Array.isArray(body) ? body : {}) as Record<string, unknown>;
+    const redirectUris = Array.isArray(input.redirect_uris) ? input.redirect_uris.filter((uri): uri is string => typeof uri === "string") : [];
+    if (redirectUris.length === 0 || !redirectUris.every(isHttpUrl)) {
+      return sendJson(res, 400, { error: "invalid_redirect_uri", error_description: "Redirect URI is not allowed for MCP connector registration" });
+    }
+    const client: RegisteredClient = {
+      client_id: randomBytes(16).toString("hex"),
+      client_id_issued_at: Math.floor(Date.now() / 1000),
+      ...(typeof input.client_name === "string" ? { client_name: input.client_name } : {}),
+      redirect_uris: redirectUris,
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+    };
+    this.registeredClients.set(client.client_id, client);
+    this.observe("session.register");
+    sendJson(res, 201, client);
+  }
+
+  /** Clients registered through /oauth2/register since the last reset. */
+  registrations(): RegisteredClient[] {
+    return [...this.registeredClients.values()];
   }
 
   private redeemCode(form: Record<string, string>, clientId: string): Grant {
@@ -492,6 +769,10 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function userCode(): string {
+  return Array.from(randomBytes(8), (byte) => USER_CODE_ALPHABET[byte % USER_CODE_ALPHABET.length]).join("");
 }
 
 function randomToken(): string {
