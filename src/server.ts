@@ -1,9 +1,15 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type RequestListener, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { ensureLocalCertificate } from "./certificate.js";
 import type { AddressInfo } from "node:net";
 import { TestkitError } from "./errors.js";
 import { INVALID_TOKEN_KINDS, KindeTestkit } from "./testkit.js";
-import { resolveSeed, seedScenario, type ResolvedSeed, type TestkitSeed } from "./seed.js";
+import { escapeHtml } from "./login-page.js";
+import { featureFlagsFor, resolveSeed, seedScenario, type ResolvedSeed, type TestkitSeed } from "./seed.js";
 import { AuthorizationServer } from "./oauth.js";
+import { AccountApi } from "./account.js";
+import { Directory } from "./directory.js";
+import { ManagementApi } from "./management.js";
 import { FailureInjector, failureBody, type FailureRule } from "./failures.js";
 import {
   BILLING_EVENT_TYPES,
@@ -28,6 +34,7 @@ export interface StartKindeTestkitOptions {
   seed?: TestkitSeed;
   allowPublic?: boolean;
   webhooks?: WebhookOptions;
+  https?: boolean | { certDirectory?: string };
 }
 
 export interface RunningKindeTestkit {
@@ -39,6 +46,8 @@ export interface RunningKindeTestkit {
   seed: ResolvedSeed;
   failures: FailureInjector;
   webhooks: WebhookDispatcher;
+  directory: Directory;
+  certificatePath: string | null;
   reset(): void;
   close(): Promise<void>;
 }
@@ -59,11 +68,17 @@ export async function startKindeTestkit(
   let ready!: (value: Context) => void;
   const testkitReady = new Promise<Context>((resolve) => (ready = resolve));
 
-  const server = createServer((req, res) => {
+  const listener: RequestListener = (req, res) => {
     testkitReady
       .then((context) => handle(req, res, context))
       .catch((error: unknown) => sendError(res, error));
-  });
+  };
+  const certificate = options.https
+    ? ensureLocalCertificate(typeof options.https === "object" ? options.https.certDirectory : undefined)
+    : null;
+  const server = certificate
+    ? createHttpsServer({ cert: certificate.cert, key: certificate.key }, listener)
+    : createServer(listener);
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -72,20 +87,24 @@ export async function startKindeTestkit(
 
   const { port } = server.address() as AddressInfo;
   const urlHost = host === "::1" ? "[::1]" : host === "127.0.0.1" ? "localhost" : host;
-  const url = `http://${urlHost}:${port}`;
+  const url = `${certificate ? "https" : "http"}://${urlHost}:${port}`;
   const testkit = await KindeTestkit.create({
     issuer: options.issuer ?? options.seed?.issuer ?? url,
     audience: options.audience ?? options.seed?.audience,
     clientId: options.clientId ?? options.seed?.clientId,
   });
+  const directory = new Directory(seed);
   const webhooks = new WebhookDispatcher(testkit, seed, seed.webhooks, options.webhooks);
-  const auth = new AuthorizationServer(testkit, seed, (type, user) => webhooks.emitForUser(type, user));
+  const auth = new AuthorizationServer(testkit, seed, (type, user) => webhooks.emitForUser(type, user), directory);
+  const management = new ManagementApi(testkit, directory, webhooks);
+  const account = new AccountApi(testkit, directory);
   const reset = () => {
     auth.reset();
     failures.clear();
     webhooks.reset();
+    directory.restore();
   };
-  ready({ testkit, auth, seed, failures, webhooks, reset });
+  ready({ testkit, auth, seed, failures, webhooks, management, account, reset });
 
   return {
     url,
@@ -96,6 +115,8 @@ export async function startKindeTestkit(
     seed,
     failures,
     webhooks,
+    directory,
+    certificatePath: certificate?.certPath ?? null,
     reset,
     close: () =>
       new Promise<void>((resolve, reject) => {
@@ -111,6 +132,8 @@ interface Context {
   seed: ResolvedSeed;
   failures: FailureInjector;
   webhooks: WebhookDispatcher;
+  management: ManagementApi;
+  account: AccountApi;
   reset(): void;
 }
 
@@ -134,6 +157,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, context: Contex
   }
 
   if (await auth.handle(req, res, url, () => readForm(req))) return;
+  if (await context.management.handle(req, res, url, async () => (await readJson(req)) as Record<string, unknown>)) return;
+  if (await context.account.handle(req, res, url)) return;
+  if (method === "GET" && pathname === "/testkit/portal") {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(
+      `<!doctype html><meta charset="utf-8"><title>Self-serve portal</title><body style="font:15px system-ui;padding:40px"><h1>Self-serve portal</h1><p>kinde-testkit does not emulate Kinde's self-serve portal. Your app linked here for <code>${escapeHtml(url.searchParams.get("subnav") ?? "profile")}</code>.</p>`,
+    );
+    return;
+  }
 
   if (method === "GET" && pathname === "/.well-known/openid-configuration") {
     return sendJson(res, 200, discovery(testkit));
@@ -249,7 +281,11 @@ async function issueToken(testkit: KindeTestkit, seed: ResolvedSeed, body: unkno
     });
     if (permissions) scenario.permissions = permissions;
     if (roles) scenario.roles = roles;
-    return (await testkit.tokenFor(scenario, { expiresIn, invalid })) as string;
+    return (await testkit.tokenFor(scenario, {
+      expiresIn,
+      invalid,
+      featureFlags: featureFlagsFor(seed, scenario.organization?.code ?? null),
+    })) as string;
   }
 
   const options: KindeTokenOptions = {

@@ -1,10 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createKindeUser } from "./factories.js";
-import { findUser, type ResolvedSeed } from "./seed.js";
+import { effectivePermissions, featureFlagsFor, findUser, type ResolvedSeed } from "./seed.js";
 import { DEFAULT_SCOPES, type KindeTestkit } from "./testkit.js";
 import { renderMessage, renderOrganizationPicker, renderSignIn } from "./login-page.js";
 import type { AuthenticatedScenario, KindeOrganization, KindeUser } from "./types.js";
+import type { Directory } from "./directory.js";
 
 export type UserEventEmitter = (type: "user.created" | "user.authenticated", user: KindeUser) => void;
 
@@ -58,6 +59,7 @@ export class AuthorizationServer {
     private readonly testkit: KindeTestkit,
     private readonly seed: ResolvedSeed,
     private readonly emit: UserEventEmitter = () => undefined,
+    private readonly directory?: Directory,
   ) {}
 
   async handle(req: IncomingMessage, res: ServerResponse, url: URL, readBody: () => Promise<Record<string, string>>): Promise<boolean> {
@@ -125,6 +127,18 @@ export class AuthorizationServer {
       return sendHtml(res, 400, renderSignIn({ request: encoded, users: this.loginPageUsers(), requiredOrganization: request.orgCode ?? undefined, error: `"${ref}" is not a valid email address.` }));
     }
 
+    if (this.directory?.isSuspended(user.id)) {
+      return sendHtml(
+        res,
+        403,
+        renderSignIn({
+          request: encoded,
+          users: this.loginPageUsers(),
+          requiredOrganization: request.orgCode ?? undefined,
+          error: `${user.email ?? user.id} is suspended and cannot sign in.`,
+        }),
+      );
+    }
     const memberships = this.seed.memberships.filter((m) => m.userId === user.id);
     const wanted = request.orgCode ?? form.org ?? null;
     let organizationCode: string | null = null;
@@ -164,7 +178,7 @@ export class AuthorizationServer {
       user,
       organization: organizationCode ? this.organization(organizationCode) : null,
       roles: [...(membership?.roles ?? [])],
-      permissions: [...(membership?.permissions ?? [])],
+      permissions: effectivePermissions(this.seed, membership),
       claims: {},
     };
     const code = randomToken();
@@ -180,6 +194,7 @@ export class AuthorizationServer {
       codeChallengeMethod: request.codeChallengeMethod,
       expiresAt: Date.now() + CODE_LIFETIME_MS,
     });
+    this.directory?.recordSignIn(user, organizationCode);
     this.emit("user.authenticated", user);
     const target = new URL(request.redirectUri);
     target.searchParams.set("code", code);
@@ -221,7 +236,11 @@ export class AuthorizationServer {
       throw new OAuthError(401, "invalid_client", `The client secret for ${clientId} is wrong.`);
     }
     const requested = (form.scope ?? "").split(/\s+/).filter(Boolean);
-    const granted = app?.scopes ? requested.filter((scope) => app.scopes!.includes(scope)) : requested;
+    const granted = app?.scopes
+      ? requested.length === 0
+        ? [...app.scopes]
+        : requested.filter((scope) => app.scopes!.includes(scope))
+      : requested;
     const audience = (form.audience ?? "").split(/\s+/).filter(Boolean);
     return {
       access_token: await this.testkit.m2mToken({
@@ -295,6 +314,7 @@ export class AuthorizationServer {
         clientId: grant.clientId,
         audience: grant.audience.length > 0 ? grant.audience : undefined,
         authTime: grant.authTime,
+        featureFlags: featureFlagsFor(this.seed, scenario.organization?.code ?? null),
       }),
       expires_in: this.testkit.accessTokenLifetime,
       scope: grant.scope.join(" "),
@@ -365,6 +385,7 @@ export class AuthorizationServer {
     const user = createKindeUser({ email: ref.toLowerCase() });
     if (!this.signedUpUsers.has(user.id)) {
       this.signedUpUsers.set(user.id, user);
+      if (this.directory) this.seed.users.push(user);
       this.emit("user.created", user);
     }
     return this.signedUpUsers.get(user.id)!;

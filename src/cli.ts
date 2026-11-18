@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { TestkitError } from "./errors.js";
@@ -6,6 +7,7 @@ import { startKindeTestkit } from "./server.js";
 import type { TestkitSeed } from "./seed.js";
 import { inspectToken, formatSpan, type Check } from "./inspect.js";
 import { parseEnvFile, runDoctor } from "./doctor.js";
+import { ensureLocalCertificate } from "./certificate.js";
 
 const DEFAULT_URL = process.env.KINDE_TESTKIT_URL ?? "http://localhost:4400";
 const DEFAULT_SEED_FILE = "kinde-testkit.json";
@@ -22,6 +24,7 @@ Usage
   kinde-testkit fail <path> [options]    Make an endpoint fail, slow down or hang
   kinde-testkit reset                    Clear sign-in sessions and failure rules
   kinde-testkit webhook <type> [options] Send a signed webhook event
+  kinde-testkit cert [--dir <dir>]       Create the local HTTPS certificate and print its path
 
 start
   --port <n>            Port to listen on (default 4400)
@@ -32,6 +35,8 @@ start
   --seed <file>         Seed file (default ./kinde-testkit.json when it exists)
   --allow-public        Allow binding to a non-loopback interface
   --webhook <url>       Send webhooks to this URL (repeatable)
+  --https               Serve HTTPS with a local certificate (needed by @kinde/management-api-js)
+  --cert-dir <dir>      Where to keep that certificate (default ./.kinde-testkit)
 
 token
   --url <url>           Running issuer (default ${DEFAULT_URL})
@@ -104,6 +109,8 @@ async function main(argv: string[]): Promise<void> {
     case "webhook":
     case "webhooks":
       return webhook(rest);
+    case "cert":
+      return cert(rest);
     case undefined:
     case "help":
     case "--help":
@@ -127,6 +134,8 @@ async function start(args: string[]): Promise<void> {
       seed: { type: "string" },
       "allow-public": { type: "boolean" },
       webhook: { type: "string", multiple: true },
+      https: { type: "boolean" },
+      "cert-dir": { type: "string" },
       json: { type: "boolean" },
     },
   });
@@ -142,6 +151,7 @@ async function start(args: string[]): Promise<void> {
     clientId: values["client-id"],
     seed,
     allowPublic: values["allow-public"],
+    https: values.https ? { certDirectory: values["cert-dir"] } : undefined,
   });
 
   if (values.json) {
@@ -173,6 +183,9 @@ async function start(args: string[]): Promise<void> {
         `Users:         ${running.seed.users.length}`,
         `Organizations: ${running.seed.organizations.length}`,
         `Webhooks:      ${running.webhooks.listEndpoints().map((e) => e.url).join(", ") || "none"}`,
+        ...(running.certificatePath
+          ? ["", "HTTPS uses a local certificate. Start Node processes that call the testkit with:", `  NODE_EXTRA_CA_CERTS=${running.certificatePath}`]
+          : []),
         "",
         "Test tokens only. Press Ctrl+C to stop.",
         "",
@@ -288,7 +301,7 @@ async function doctor(args: string[]): Promise<void> {
     Object.assign(env, parseEnvFile(readFileSync(file, "utf8")));
   }
   for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith("KINDE_") && value !== undefined) env[key] = value;
+    if ((key.startsWith("KINDE_") || key === "NODE_EXTRA_CA_CERTS") && value !== undefined) env[key] = value;
   }
   const report = await runDoctor({ url: values.url ?? DEFAULT_URL, env });
   if (values.json) {
@@ -442,6 +455,18 @@ async function webhook(args: string[]): Promise<void> {
   if (deliveries.some((d) => !d.delivered)) process.exitCode = 1;
 }
 
+async function cert(args: string[]): Promise<void> {
+  const { values } = parseArgs({ args, options: { dir: { type: "string" }, json: { type: "boolean" } } });
+  const certificate = ensureLocalCertificate(values.dir);
+  if (values.json) {
+    process.stdout.write(`${JSON.stringify({ certPath: certificate.certPath, created: certificate.created })}\n`);
+    return;
+  }
+  process.stdout.write(
+    `${certificate.created ? "Created" : "Using"} ${certificate.certPath}\n\nTrust it in Node processes that call the testkit over HTTPS:\n  NODE_EXTRA_CA_CERTS=${certificate.certPath}\n`,
+  );
+}
+
 function describeDelivery(delivery: Record<string, unknown>): string {
   const attempts = (delivery.attempts as Array<{ status: number | null; error: string | null }>) ?? [];
   const outcome = attempts.map((a) => (a.status === null ? "no answer" : String(a.status))).join(", ");
@@ -525,7 +550,28 @@ function csv(value: string): string[] {
     .filter(Boolean);
 }
 
-main(process.argv.slice(2)).catch((error: unknown) => {
+function relaunchTrustingLocalCertificate(argv: string[]): boolean {
+  if (process.env.KINDE_TESTKIT_TRUSTED || argv[0] === "start" || argv[0] === "cert") return false;
+  const urlArg = argv.find((arg, i) => arg.startsWith("--url=") || argv[i - 1] === "--url");
+  const target = urlArg?.replace(/^--url=/, "") ?? process.env.KINDE_TESTKIT_URL ?? "";
+  const certPath = resolve(".kinde-testkit", "localhost-cert.pem");
+  if (!target.startsWith("https://") || !existsSync(certPath)) return false;
+  let trusted = certPath;
+  const existing = process.env.NODE_EXTRA_CA_CERTS;
+  if (existing && resolve(existing) !== certPath) {
+    // Node reads one extra CA file, so keep the certificates the user already trusts.
+    trusted = resolve(".kinde-testkit", "ca-bundle.pem");
+    const current = existsSync(existing) ? readFileSync(existing, "utf8") : "";
+    writeFileSync(trusted, `${current.trimEnd()}\n${readFileSync(certPath, "utf8")}`);
+  }
+  const result = spawnSync(process.execPath, [process.argv[1]!, ...argv], {
+    stdio: "inherit",
+    env: { ...process.env, NODE_EXTRA_CA_CERTS: trusted, KINDE_TESTKIT_TRUSTED: "1" },
+  });
+  process.exit(result.status ?? 1);
+}
+
+if (!relaunchTrustingLocalCertificate(process.argv.slice(2))) main(process.argv.slice(2)).catch((error: unknown) => {
   if (error instanceof TestkitError) {
     process.stderr.write(`${error.toString()}\n`);
   } else {

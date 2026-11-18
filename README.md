@@ -9,7 +9,7 @@ There are two ways to use it:
 - **API and unit tests:** mint a token for any user, organization and permission set, including expired, tampered and unsigned tokens, and send it to your API.
 - **Browser tests:** point your app at the testkit, and Playwright signs in as any seeded user through your app's own login route.
 
-It also issues machine-to-machine tokens, sends signed webhooks, makes Kinde's endpoints fail or slow down on demand, and has a `doctor` command that checks your app's Kinde settings before a test run.
+It also issues machine-to-machine tokens, answers the Management API and Account API calls your app makes, sends signed webhooks, makes Kinde's endpoints fail or slow down on demand, and has a `doctor` command that checks your app's Kinde settings before a test run.
 
 ## Why it exists
 
@@ -238,6 +238,49 @@ These options test the hard parts of a webhook handler:
 
 `kinde.webhooks.deliveries()`, `kinde-testkit webhook --deliveries` and `GET /testkit/webhooks/deliveries` show every attempt with its status code or error. [`examples/nextjs`](examples/nextjs) has a webhook route and Playwright tests for valid, duplicated, forged and stale events.
 
+## Management API and Account API
+
+Many apps call Kinde's APIs as well as signing users in. An admin page creates organizations and adds members, a signup flow creates users, and the front end asks the Account API for the current user's permissions and feature flags. kinde-testkit answers these calls from the seed, so the test checks what your code does with the result.
+
+The Management API is at `/api/v1`. Like Kinde, it needs a machine-to-machine token for the audience `<issuer>/api`. When a seeded application has scopes, the token gets those scopes and each route checks for its own, such as `read:users` or `create:organizations`. These routes work:
+
+| Area | Routes |
+| --- | --- |
+| Users | List, filter by ID or email, get, create, update (including `is_suspended`), delete |
+| Organizations | List, get, create, update, delete |
+| Members | List, add with roles, remove |
+| Member roles and permissions | List, grant, remove |
+| Roles and permissions | List, get, create, delete, and list a role's permissions |
+
+Every change goes into the testkit's data. A user you create can sign in, a member you add gets the role's permissions in their next token, and a suspended user sees an error on the sign-in page. Each change also sends the matching webhook, such as `organization.created` or `user.deleted`, to your configured endpoints. `reset()` puts the seed back. A route the testkit does not implement answers 404 with the code `ROUTE_NOT_FOUND`, so a test never passes against an empty answer.
+
+Kinde's official client, `@kinde/management-api-js`, forces `https://`. Start the testkit with HTTPS and run your code with the certificate it prints:
+
+```ts
+const kinde = useKindeTestkit({ seed, https: true });
+```
+
+```bash
+npx kinde-testkit start --https
+NODE_EXTRA_CA_CERTS=.kinde-testkit/localhost-cert.pem npm test
+```
+
+The first start writes a self-signed certificate for `localhost` and `127.0.0.1` to `.kinde-testkit/` and reuses it after that. The test suite runs the official client against the testkit without changes.
+
+The Account API is at `/account_api/v1`. It reads the user's access token and answers for the token's active organization: `permissions`, `permission/<key>`, `roles`, `feature_flags`, `properties`, `entitlements`, `entitlement/<key>` and `portal_link`. Kinde's `@kinde/js-utils` helpers, such as `getPermissions({ forceApi: true })`, `getFlag()` and `getEntitlements()`, work against it. Add the data it returns to the seed:
+
+```json
+{
+  "users": [{ "id": "kp_admin", "email": "admin@example.test", "properties": { "team": "platform" } }],
+  "roles": [{ "key": "admin", "name": "Admin", "permissions": ["projects:read", "projects:delete"] }],
+  "memberships": [{ "user": "kp_admin", "organization": "org_acme", "roles": ["admin"] }],
+  "featureFlags": [{ "key": "new_editor", "value": false, "organizations": { "org_acme": true } }],
+  "plans": [{ "key": "pro", "subscribers": ["org_acme"], "entitlements": [{ "featureKey": "seats", "limitMax": 10 }] }]
+}
+```
+
+A role's permissions are added to the member's own permissions, in tokens and in both APIs. Feature flags also go into access tokens as `feature_flags`, with the organization's value when it has one.
+
 ## Testing outages
 
 Your app should handle Kinde being slow or down. kinde-testkit can make any endpoint answer with an error, wait before answering, or never answer:
@@ -375,7 +418,8 @@ A token for a seeded user takes its roles and permissions from the membership in
 
 | Command | What it does |
 | --- | --- |
-| `kinde-testkit start` | Start the issuer. Options: `--port`, `--host`, `--issuer`, `--audience`, `--client-id`, `--seed`, `--webhook`, `--allow-public`, `--json` |
+| `kinde-testkit start` | Start the issuer. Options: `--port`, `--host`, `--issuer`, `--audience`, `--client-id`, `--seed`, `--webhook`, `--https`, `--cert-dir`, `--allow-public`, `--json` |
+| `kinde-testkit cert` | Write the local HTTPS certificate and print the `NODE_EXTRA_CA_CERTS` line. Options: `--dir` |
 | `kinde-testkit token` | Print a signed access token. Options: `--user`, `--org`, `--sub`, `--permissions`, `--roles`, `--expires-in`, `--invalid`, `--url`, `--json` |
 | `kinde-testkit users` | List seeded users |
 | `kinde-testkit organizations` | List seeded organizations |
@@ -445,6 +489,8 @@ From `kinde-testkit/playwright`: `test` and `expect` with the `kinde` fixture, t
 | `GET /oauth2/v2/user_profile` | Profile for the Bearer token's user |
 | `POST /oauth2/revoke` | Revokes a refresh token |
 | `GET /logout?redirect=<url>` | Signs out and redirects |
+| `/api/v1/...` | Management API: users, organizations, members, roles and permissions |
+| `GET /account_api/v1/...` | Account API: permissions, roles, feature flags, properties and entitlements for the token's user |
 | `POST /testkit/token` | Mints a token directly, used by `kinde-testkit token` |
 | `GET /testkit/users`, `/testkit/organizations`, `/testkit/memberships`, `/testkit/health` | Seed data and a health check |
 | `GET`, `POST`, `DELETE /testkit/failures`, `DELETE /testkit/failures/<id>` | List, add and remove failure rules |

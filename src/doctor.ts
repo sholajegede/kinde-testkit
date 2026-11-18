@@ -82,6 +82,18 @@ export async function runDoctor(options: { url: string; env: Record<string, stri
     checks.push({ name: "KINDE_CLIENT_SECRET", status: "pass", detail: "Set, in the format Kinde's SDKs accept." });
   }
 
+  if (issuer?.startsWith("https://")) {
+    checks.push(
+      env.NODE_EXTRA_CA_CERTS
+        ? { name: "NODE_EXTRA_CA_CERTS", status: "pass", detail: `${env.NODE_EXTRA_CA_CERTS}.` }
+        : {
+            name: "NODE_EXTRA_CA_CERTS",
+            status: "warn",
+            detail: "The testkit serves HTTPS with a local certificate. Start your app with NODE_EXTRA_CA_CERTS set to it, or Node will refuse the connection.",
+          },
+    );
+  }
+
   const site = env.KINDE_SITE_URL;
   if (!site) {
     checks.push({ name: "KINDE_SITE_URL", status: "warn", detail: "Not set. The Next.js SDK builds its callback URL from it." });

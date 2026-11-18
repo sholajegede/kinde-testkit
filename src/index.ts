@@ -32,6 +32,8 @@ export {
 } from "./server.js";
 export { resolveSeed, seedScenario, type ResolvedSeed, type TestkitSeed } from "./seed.js";
 export { TestkitError, type TestkitErrorCode } from "./errors.js";
+export { ensureLocalCertificate, createLocalCertificate, type LocalCertificate } from "./certificate.js";
+export { Directory } from "./directory.js";
 export { FailureInjector, type ActiveFailure, type FailureRule } from "./failures.js";
 export {
   WebhookDispatcher,

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+- Add the Management API at `/api/v1`: users, organizations, organization members, member roles and permissions, roles and permissions. It needs an M2M token for `<issuer>/api`, checks the scopes of seeded applications, and writes every change into the testkit's data. Changes send the matching webhooks. Unimplemented routes answer 404 `ROUTE_NOT_FOUND`.
+- Add the Account API at `/account_api/v1`: permissions, roles, feature flags, properties, entitlements and the portal link, for the active organization of the user's token. Kinde's `@kinde/js-utils` helpers work against it.
+- Add HTTPS mode (`https: true`, `start --https`, `kinde-testkit cert`) with a local certificate, so Kinde's official `@kinde/management-api-js` client runs unchanged. CLI commands given an `https://` URL trust the certificate on their own.
+- The seed takes `roles` with permissions, `permissions`, `featureFlags` with organization values, `plans` with entitlements, and user `properties`. A role's permissions are added to the member's token. Feature flags go into access tokens.
+- Suspended users cannot sign in, and `reset()` restores the seed after API changes.
+
 ## 0.4.0
 
 - Add signed webhooks in Kinde's format: a JWT body with `Content-Type: application/jwt` and a `webhook-id` header, decodable with `@kinde/webhooks`.

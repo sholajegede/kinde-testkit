@@ -276,6 +276,15 @@ export class WebhookDispatcher {
     }
   }
 
+  emit(type: string, data: Record<string, unknown>, source: WebhookSource = "api"): void {
+    if (!this.endpoints.some((e) => e.events === null || e.events.includes(type))) return;
+    void this.send({ type, data, source }).catch(() => undefined);
+  }
+
+  userEventData(user: KindeUser): Record<string, unknown> {
+    return this.userPayload(user);
+  }
+
   emitForUser(type: "user.created" | "user.authenticated", user: KindeUser): void {
     if (!this.endpoints.some((e) => e.events === null || e.events.includes(type))) return;
     const data = type === "user.created" ? { user: this.userPayload(user) } : { user: { id: user.id } };
