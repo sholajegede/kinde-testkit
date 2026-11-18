@@ -7,9 +7,9 @@ Test apps that use Kinde without a live Kinde environment. kinde-testkit runs a 
 There are two ways to use it:
 
 - **API and unit tests:** mint a token for any user, organization and permission set, including expired, tampered and unsigned tokens, and send it to your API.
-- **Browser tests:** point your app at the testkit, and Playwright signs in as any seeded user through your app's own login route.
+- **Browser tests:** point your app at the testkit, and Playwright or Cypress signs in as any seeded user through your app's own login route.
 
-It also issues machine-to-machine tokens, answers the Management API and Account API calls your app makes, sends signed webhooks, makes Kinde's endpoints fail or slow down on demand, and has a `doctor` command that checks your app's Kinde settings before a test run.
+It also issues machine-to-machine tokens, answers the Management API and Account API calls your app makes, sends signed webhooks, and makes Kinde's endpoints fail or slow down on demand. A local dashboard shows what the testkit issued and answered, a coverage report shows which authentication cases your tests reached, and a `doctor` command checks your app's Kinde settings before a test run. It runs with Vitest, Jest, Playwright and Cypress, from the command line, or in Docker.
 
 ## Why it exists
 
@@ -85,6 +85,25 @@ describe("projects API", () => {
 
 `useKindeTestkit()` starts the issuer on a free port before the tests and stops it after. Point your app's issuer setting at `kinde.issuer` for the test run, so its middleware fetches keys from the testkit instead of Kinde.
 
+### Jest
+
+`kinde-testkit/jest` has the same `useKindeTestkit()` and `kindeTest()`. It works with CommonJS and ESM test files:
+
+```js
+const { scenario } = require("kinde-testkit");
+const { useKindeTestkit } = require("kinde-testkit/jest");
+
+const kinde = useKindeTestkit({ seed: "kinde-testkit.yaml" });
+
+test("a viewer cannot delete a project", async () => {
+  const { headers } = await kinde.auth(scenario().user({ email: "viewer@example.test" }).organization("org_acme").authenticated());
+  const res = await request(app).delete("/projects/p1").set(headers);
+  expect(res.status).toBe(403);
+});
+```
+
+It uses Jest's global `beforeAll` and `afterAll`. If you turn off `injectGlobals`, pass them from `@jest/globals`: `useKindeTestkit(options, { beforeAll, afterAll })`.
+
 ## Browser tests with Playwright
 
 Start the testkit and your app from `playwright.config.ts`, with the app's Kinde settings pointed at the testkit:
@@ -154,6 +173,52 @@ The fixture uses `/api/auth/login` and `/api/auth/logout`, the Next.js SDK's rou
 A user with more than one organization needs `{ org }`, otherwise the fixture stops with an error that names the user. Signing in to an organization the user does not belong to also fails, the same way Kinde refuses it.
 
 [`examples/nextjs`](examples/nextjs) is a working Next.js app on `@kinde-oss/kinde-auth-nextjs` with these tests.
+
+## Browser tests with Cypress
+
+Start the testkit from `setupNodeEvents`, and import the commands in your support file:
+
+```ts
+// cypress.config.ts
+import { defineConfig } from "cypress";
+import { setupKindeTestkit } from "kinde-testkit/cypress";
+
+export default defineConfig({
+  e2e: {
+    baseUrl: "http://localhost:3000",
+    setupNodeEvents(on, config) {
+      return setupKindeTestkit(on, config, { start: { seed: "kinde-testkit.json" } });
+    },
+  },
+});
+```
+
+```ts
+// cypress/support/e2e.ts
+import "kinde-testkit/cypress/support";
+```
+
+This starts the testkit on port 4400 for the run, so start your app with `KINDE_ISSUER_URL=http://localhost:4400`. If you already run `kinde-testkit start`, leave out `start`, and the commands use `KINDE_ISSUER_URL` or `http://localhost:4400`.
+
+```ts
+it("a viewer cannot delete projects", () => {
+  cy.kindeSignIn("viewer@example.test");
+  cy.visit("/projects");
+  cy.contains("button", /Delete/).should("not.exist");
+});
+```
+
+| Command | What it does |
+| --- | --- |
+| `cy.kindeSignIn(email, { org, loginPath })` | Signs in through your app's login route with requests, then opens the app's callback. Fast, and needs no `cy.origin()` |
+| `cy.kindeSignOut({ logoutPath })` | Opens your app's logout route |
+| `cy.kindeToken(options)` | Yields an access token, with the same options as `POST /testkit/token` |
+| `cy.kindeInjectFailure(rule)` | Makes a testkit endpoint fail, slow down or hang. Removed when the test ends |
+| `cy.kindeClearFailures()` | Removes the failures this test added |
+| `cy.kindeSendWebhook(event)` | Sends a signed webhook and yields the delivery results |
+| `cy.kindeReset()` | Clears sessions, failure rules, deliveries and Management API changes |
+
+`cy.kindeSignIn()` skips the sign-in page but runs everything else your app does: its login route, its state cookie and its callback, where the app exchanges the code for tokens. To test the sign-in page itself, visit your login route and use `cy.origin("http://localhost:4400", ...)`. The example app's `cypress/e2e/auth.cy.ts` does both.
 
 ### The sign-in page
 
@@ -374,6 +439,7 @@ Issuer:        http://localhost:4400
 Discovery:     http://localhost:4400/.well-known/openid-configuration
 JWKS:          http://localhost:4400/.well-known/jwks
 Token:         POST http://localhost:4400/testkit/token
+Dashboard:     http://localhost:4400/dashboard
 ```
 
 Then mint a token from another terminal:
@@ -385,7 +451,23 @@ curl -H "Authorization: Bearer $(npx kinde-testkit token --user admin@example.te
 
 ### Seed file
 
-When `kinde-testkit.json` exists in the current folder, `start` loads it. Pass `--seed <file>` to use another path.
+`start` loads the first of `kinde-testkit.json`, `.yaml`, `.yml`, `.ts`, `.mts`, `.js` and `.mjs` in the current folder. Pass `--seed <file>` to use another path. In code, `seed` takes an object or a file path. The same seed in YAML:
+
+```yaml
+users:
+  - id: kp_admin
+    email: admin@example.test
+organizations:
+  - code: org_acme
+    name: Acme Inc.
+memberships:
+  - user: kp_admin
+    organization: org_acme
+    roles: [admin]
+    permissions: [projects:read, projects:delete]
+```
+
+A JavaScript or TypeScript seed exports the object as its default export or as `seed`. TypeScript seeds need Node 22.18 or later, which runs TypeScript files directly. The JSON version, with every section:
 
 ```json
 {
@@ -414,20 +496,100 @@ When `kinde-testkit.json` exists in the current folder, `start` loads it. Pass `
 
 A token for a seeded user takes its roles and permissions from the membership in the active organization. A user with two memberships must name the organization. The issuer refuses a token for an organization the user does not belong to, because Kinde would not issue one. The issuer checks the whole seed when it starts and lists every problem at once.
 
+`kinde-testkit seed <file>` replaces the seed of a running issuer, and `reset` returns to that seed after that. The issuer, audience and signing key stay the same, so apps that cached the keys keep working. `kinde-testkit stop` stops a running issuer.
+
+## Dashboard
+
+Open `http://localhost:4400/dashboard` while the testkit runs. It shows:
+
+- users, organizations and memberships, with the permissions each member's token gets
+- the latest tokens the testkit issued, with their claims
+- the latest requests to Kinde's endpoints, with status and time taken. Codes, secrets and refresh tokens are hidden
+- webhook deliveries, and a form to send an event
+- failure rules, and a form to add one
+- the coverage report
+
+It has buttons to reset the testkit and to clear coverage. **Live updates** reloads the page every 3 seconds. The dashboard only adds a view: everything on it is also in the CLI and the HTTP endpoints. It only accepts actions from its own page, so another site you have open cannot reset or change the testkit.
+
+## Authentication coverage
+
+Most suites test that a user can sign in. Authorization bugs hide in the other cases: a token from another organization, an expired token, a user with no permissions. The testkit records which of these cases it produced during a run, grouped the way the bugs happen:
+
+```bash
+npx kinde-testkit coverage
+```
+
+```
+Kinde authentication coverage
+
+Identity              6/6
+Organizations         4/5
+Permissions           5/5
+Token validation      3/8
+Sessions              4/5
+Machine-to-machine    0/4
+Kinde APIs            2/4
+Webhooks              5/5
+Outages               2/4
+
+Overall: 31/46
+
+Not covered:
+  Organizations: Organization claim missing. Mint a token with invalid: "missing-organization".
+  Token validation: Wrong issuer. Mint a token with invalid: "wrong-issuer".
+  ...
+```
+
+Turn it on with `useKindeTestkit({ coverage: true })` in Vitest or Jest, `setupKindeTestkit(on, config, { start: { coverage: true } })` in Cypress, or `kinde-testkit start --coverage`. Each test file writes its result to `.kinde-testkit/coverage/` when it ends, and `kinde-testkit coverage` adds them up. Clear the folder before a run with `kinde-testkit coverage --clear`, and fail CI below a number with `--min 30`. For a running issuer, `kinde-testkit coverage --url http://localhost:4400` reads it directly, and the dashboard shows the same report.
+
+Coverage counts what the testkit produced, such as an expired token or a 503 from the token endpoint. It does not know what your test checked after that. A covered item means your suite sent that case to your app. Your assertions decide whether the app handled it.
+
+## Docker
+
+The repository has a Dockerfile. Build it straight from GitHub, then mount the folder with your seed file:
+
+```bash
+docker build -t kinde-testkit https://github.com/sholajegede/kinde-testkit.git
+docker run --rm -p 4400:4400 -v "$PWD:/work" kinde-testkit
+```
+
+The container runs `kinde-testkit start` as a non-root user, loads the seed file from `/work`, and has a health check on `/testkit/health`. Its issuer is `http://localhost:4400`, which is right when your app and browser run on the host. In Docker Compose, where the app reaches the testkit by service name, set the issuer to the address your app uses:
+
+```yaml
+services:
+  kinde:
+    build: https://github.com/sholajegede/kinde-testkit.git
+    command: ["start", "--host", "0.0.0.0", "--port", "4400", "--allow-public", "--issuer", "http://kinde:4400"]
+    volumes: ["./:/work"]
+  app:
+    build: .
+    environment:
+      KINDE_ISSUER_URL: http://kinde:4400
+    depends_on:
+      kinde:
+        condition: service_healthy
+```
+
+The browser must reach the same issuer address as the app, because the issuer in the token has to match. Run browser tests on the host with the `localhost` setup, or run the browser in the same Compose network.
+
 ### Commands
 
 | Command | What it does |
 | --- | --- |
-| `kinde-testkit start` | Start the issuer. Options: `--port`, `--host`, `--issuer`, `--audience`, `--client-id`, `--seed`, `--webhook`, `--https`, `--cert-dir`, `--allow-public`, `--json` |
+| `kinde-testkit start` | Start the issuer. Options: `--port`, `--host`, `--issuer`, `--audience`, `--client-id`, `--seed`, `--webhook`, `--https`, `--cert-dir`, `--coverage`, `--allow-public`, `--json` |
+| `kinde-testkit stop` | Stop a running issuer. Options: `--url` |
+| `kinde-testkit seed <file>` | Replace a running issuer's seed with a JSON, YAML, JavaScript or TypeScript file. Options: `--url`, `--json` |
 | `kinde-testkit cert` | Write the local HTTPS certificate and print the `NODE_EXTRA_CA_CERTS` line. Options: `--dir` |
 | `kinde-testkit token` | Print a signed access token. Options: `--user`, `--org`, `--sub`, `--permissions`, `--roles`, `--expires-in`, `--invalid`, `--url`, `--json` |
 | `kinde-testkit users` | List seeded users |
 | `kinde-testkit organizations` | List seeded organizations |
 | `kinde-testkit token --m2m` | Print a machine-to-machine token. Options: `--client-id`, `--scope`, `--org`, `--permissions`, `--expires-in`, `--invalid` |
 | `kinde-testkit inspect [token]` | Decode a token and check it. Reads stdin when no token is given. Options: `--url`, `--json` |
+| `kinde-testkit inspect --requests` | List the latest requests the issuer answered. `--tokens` lists the latest tokens it issued |
+| `kinde-testkit coverage` | Show which authentication cases your tests covered. Options: `--url`, `--dir`, `--min`, `--clear`, `--json` |
 | `kinde-testkit doctor` | Check your app's Kinde settings against the issuer. Options: `--url`, `--env-file`, `--json` |
 | `kinde-testkit fail <path>` | Add a failure rule. Options: `--status`, `--delay`, `--hang`, `--times`, `--method`, `--list`, `--clear` |
-| `kinde-testkit reset` | Clear sign-in sessions, failure rules, webhook deliveries and endpoints added at runtime |
+| `kinde-testkit reset` | Clear sign-in sessions, failure rules, webhook deliveries, endpoints added at runtime and Management API changes |
 | `kinde-testkit webhook <type>` | Send a signed webhook. Options: `--user`, `--org`, `--role`, `--permission`, `--data`, `--to`, `--duplicate`, `--invalid`, `--types`, `--deliveries` |
 
 Every command takes `--json` for CI scripts and coding agents.
@@ -469,12 +631,16 @@ import {
 - `scenario()` builds a caller: `.user()`, `.organization()`, `.withoutOrganization()`, `.role()`, `.permissions()`, `.claims()`, then `.authenticated()` or `.unauthenticated()`. The result is plain JSON, so you can keep scenarios in a shared file and import them anywhere.
 - `createKindeUser()` gives a user a stable id derived from the email, so the same email always maps to the same `kp_` id. `createKindeOrganization()` and `createMembership()` cover organizations and per-organization roles.
 - `KindeTestkit.create({ issuer, audience, clientId, accessTokenExpiresIn, idTokenExpiresIn })` holds a signing key. Access tokens last 24 hours and ID tokens 1 hour by default, the same as Kinde's defaults. Use `token()`, `tokenFor(scenario)`, `idTokenFor(scenario)`, `m2mToken()`, `headersFor(scenario)`, `principalFor(scenario)`, `signPayload()` and `jwks()`.
-- `startKindeTestkit({ port, seed, audience })` runs the issuer in-process and returns `{ url, issuer, jwksUri, testkit, failures, webhooks, reset(), close() }`. Pass `webhooks: { retryDelaysMs, timeoutMs }` to change webhook retries.
+- `startKindeTestkit({ port, seed, audience, https, coverage })` runs the issuer in-process and returns `{ url, issuer, jwksUri, testkit, failures, webhooks, directory, coverage, activity, loadSeed(), reset(), close() }`. `seed` is an object or a file path. Pass `webhooks: { retryDelaysMs, timeoutMs }` to change webhook retries.
+- `loadSeedFile(path)` reads a JSON, YAML, JavaScript or TypeScript seed. `readCoverageDirectory()`, `formatCoverageReport()` and `CoverageRecorder` are the functions behind `kinde-testkit coverage`.
+- `appLoginUrl()`, `readSignInRequest()`, `signInForm()` and `resolveLocation()` are the steps `cy.kindeSignIn()` takes, for signing in with requests from another test runner.
 - `inspectToken(token, { issuerUrl })` and `runDoctor({ url, env })` are the functions behind `inspect` and `doctor`. Both return a list of checks with `pass`, `warn` or `fail`.
 - `createKindeToken(options)` signs with a shared default testkit whose issuer is `http://localhost:4400`, or `KINDE_TESTKIT_ISSUER` when set.
 - `principalFromClaims(claims)` turns verified claims into `{ type, subject, issuer, organization, roles, permissions }`. `type` is `"user"`, or `"machine"` for M2M tokens.
 
-From `kinde-testkit/vitest`: `useKindeTestkit()`, which also exposes `failures`, `webhooks` and `reset()`, and `kindeTest()`.
+From `kinde-testkit/vitest` and `kinde-testkit/jest`: `useKindeTestkit()`, which also exposes `failures`, `webhooks`, `directory`, `coverage`, `activity`, `loadSeed()` and `reset()`, and `kindeTest()`.
+
+From `kinde-testkit/cypress`: `setupKindeTestkit(on, config, { start, url })`. From `kinde-testkit/cypress/support`: the `cy.kinde*` commands and their types.
 
 From `kinde-testkit/playwright`: `test` and `expect` with the `kinde` fixture, the `KindeTestOptions` type for your config, and `createKindeFixture(page, options)` for building the fixture into your own `test.extend()`.
 
@@ -497,7 +663,12 @@ From `kinde-testkit/playwright`: `test` and `expect` with the `kinde` fixture, t
 | `POST /testkit/webhooks` | Send a webhook and return the deliveries |
 | `GET /testkit/webhooks/deliveries`, `/testkit/webhooks/types` | Delivery log and the event types with built-in payloads |
 | `GET`, `POST /testkit/webhooks/endpoints`, `DELETE /testkit/webhooks/endpoints/<id>` | List, add and remove webhook endpoints |
-| `POST /testkit/reset` | Clear sign-in state, failure rules and webhook deliveries |
+| `POST /testkit/reset` | Clear sign-in state, failure rules, webhook deliveries and Management API changes |
+| `POST /testkit/seed` | Replace the seed with the JSON body |
+| `POST /testkit/stop` | Stop the issuer |
+| `GET`, `DELETE /testkit/coverage` | Read or clear the coverage report |
+| `GET /testkit/requests`, `/testkit/tokens` | The latest requests answered and tokens issued |
+| `GET /dashboard` | The dashboard |
 
 ## Token shape
 
@@ -538,20 +709,27 @@ ID tokens carry `amr`, `aud` (the client ID), `auth_time`, `email`, `email_verif
 | Switching the active organization | Implemented through `org_code` or the organization picker |
 | Authorization code flow with sign-in page, PKCE and `state` | Implemented |
 | Refresh tokens with rotation, revocation, logout and user profile | Implemented |
-| Vitest helper and Playwright fixture | Implemented |
+| Vitest and Jest helpers, Playwright fixture, Cypress commands | Implemented. Jest runs in the test suite. Cypress's sign-in steps are tested against the Next.js SDK |
 | Accepted by `@kinde/jwt-validator` and the Next.js SDK's `validateToken` | Tested |
 | Sign-in, organization switching and sign-out through `@kinde-oss/kinde-auth-nextjs` | Tested in Chrome with Playwright |
 | Client credentials grant with Kinde's M2M token shape, seeded and org-scoped apps | Implemented |
 | Failure injection: error status, delay, hang, by path, method and count | Implemented, tested through the Next.js SDK |
 | `doctor`, `inspect` and `reset` commands | Implemented |
-| Management API and Account API | Not implemented |
+| Management API: users, organizations, members, roles and permissions | Implemented, tested with `@kinde/management-api-js` |
+| Account API: permissions, roles, feature flags, properties and entitlements | Implemented, tested with `@kinde/js-utils` |
+| Seed files in JSON, YAML, JavaScript and TypeScript, replaced at runtime | Implemented |
+| Dashboard, request and token log | Implemented |
+| Authentication coverage report | Implemented |
+| Docker image | Dockerfile in the repository |
+| Passwords, MFA, social sign-in and SAML | Not emulated. The sign-in page signs in any seeded user or email directly |
+| Kinde's hosted pages, such as the self-serve portal | Not emulated. `portal_link` returns a placeholder page |
 | Signed webhooks for the 16 event types in `@kinde/webhooks`, billing events with your data, retries, duplicates, forged and stale events | Implemented, tested with `@kinde/webhooks` and a Next.js route |
 
 ## Safety
 
 kinde-testkit signs a token for any identity you ask for, so it keeps to localhost:
 
-- The issuer binds to `127.0.0.1` and refuses any other interface unless you pass `--allow-public`.
+- The issuer binds to `127.0.0.1` and refuses any other interface unless you pass `--allow-public`. The Docker image passes it, because the container's own network is where it listens. Publish the port to your machine only, as `-p 4400:4400` does.
 - It makes a new signing key every time it starts. Two running issuers never share a key.
 - It accepts any client ID, client secret and redirect URI, so it never needs your real app settings. That is only safe because it stays on localhost.
 - Codes, refresh tokens and users who sign in with an unseeded email live in memory and are gone when it stops.

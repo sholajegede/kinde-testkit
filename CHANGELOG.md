@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- Add `kinde-testkit/jest` with the same `useKindeTestkit()` and `kindeTest()` as the Vitest helper, for CommonJS and ESM test files.
+- Add Cypress support: `setupKindeTestkit()` starts the testkit from `setupNodeEvents`, and `kinde-testkit/cypress/support` adds `cy.kindeSignIn()`, `cy.kindeSignOut()`, `cy.kindeToken()`, `cy.kindeInjectFailure()`, `cy.kindeClearFailures()`, `cy.kindeSendWebhook()` and `cy.kindeReset()`.
+- Load seed files in YAML, JavaScript and TypeScript as well as JSON, and replace a running issuer's seed with `kinde-testkit seed <file>`.
+- Add a dashboard at `/dashboard` with the seed, recent tokens, requests, webhook deliveries, failure rules and coverage, plus reset and send forms.
+- Add an authentication coverage report: the testkit records which identity, organization, permission, token, session, M2M, API, webhook and outage cases a run produced. Read it with `kinde-testkit coverage`, and fail CI below a number with `--min`.
+- Add a Dockerfile that runs the issuer as a non-root user with a health check, plus Docker Compose instructions.
+- The Next.js example adds Cypress tests.
+
 ## 0.5.0
 
 - Add the Management API at `/api/v1`: users, organizations, organization members, member roles and permissions, roles and permissions. It needs an M2M token for `<issuer>/api`, checks the scopes of seeded applications, and writes every change into the testkit's data. Changes send the matching webhooks. Unimplemented routes answer 404 `ROUTE_NOT_FOUND`.

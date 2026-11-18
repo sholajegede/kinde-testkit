@@ -93,7 +93,31 @@ export interface IdTokenOptions {
   nonce?: string;
 }
 
+/** Receives every token the testkit signs, for coverage and the dashboard. */
+export interface TokenObserver {
+  accessToken?(payload: Record<string, unknown>, invalid: InvalidTokenKind | undefined, token: string): void;
+  idToken?(payload: Record<string, unknown>, token: string): void;
+  anonymous?(): void;
+}
+
 export class KindeTestkit {
+  private observers: TokenObserver[] = [];
+
+  /** Calls the observer for every token signed from now on. Returns a function that stops it. */
+  observe(observer: TokenObserver): () => void {
+    this.observers.push(observer);
+    return () => {
+      this.observers = this.observers.filter((o) => o !== observer);
+    };
+  }
+
+  private async signAccess(payload: Record<string, unknown>, invalid: InvalidTokenKind | undefined, now: number): Promise<string> {
+    const final = applyInvalidClaims(payload, invalid, now);
+    const token = await this.sign(final, invalid);
+    for (const observer of this.observers) observer.accessToken?.(final, invalid, token);
+    return token;
+  }
+
   readonly issuer: string;
   readonly audience: string[];
   readonly clientId: string;
@@ -161,7 +185,7 @@ export class KindeTestkit {
     if (options.organizationCode) payload.org_code = options.organizationCode;
     if (options.featureFlags) payload.feature_flags = options.featureFlags;
     Object.assign(payload, options.claims ?? {});
-    return this.sign(applyInvalidClaims(payload, options.invalid, now), options.invalid);
+    return this.signAccess(payload, options.invalid, now);
   }
 
   async m2mToken(options: M2MTokenOptions = {}): Promise<string> {
@@ -183,11 +207,14 @@ export class KindeTestkit {
     if (options.organizationCode) payload.org_code = options.organizationCode;
     if (options.permissions !== undefined) payload.permissions = [...options.permissions];
     Object.assign(payload, options.claims ?? {});
-    return this.sign(applyInvalidClaims(payload, options.invalid, now), options.invalid);
+    return this.signAccess(payload, options.invalid, now);
   }
 
   async tokenFor(scenario: Scenario, overrides: ScenarioTokenOverrides = {}): Promise<string | null> {
-    if (scenario.kind === "unauthenticated") return null;
+    if (scenario.kind === "unauthenticated") {
+      for (const observer of this.observers) observer.anonymous?.();
+      return null;
+    }
     return this.token({
       subject: scenario.user.id,
       organizationCode: scenario.organization?.code ?? null,
@@ -230,7 +257,9 @@ export class KindeTestkit {
     for (const key of Object.keys(payload)) {
       if (payload[key] === null || payload[key] === undefined) delete payload[key];
     }
-    return this.sign(payload);
+    const token = await this.sign(payload);
+    for (const observer of this.observers) observer.idToken?.(payload, token);
+    return token;
   }
 
   async headersFor(scenario: Scenario, overrides: ScenarioTokenOverrides = {}): Promise<Record<string, string>> {

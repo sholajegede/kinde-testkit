@@ -64,3 +64,30 @@ export type {
   Scenario,
   UnauthenticatedScenario,
 } from "./types.js";
+export { kindeTest, type KindeTestAuth, type KindeTestkitHandle } from "./handle.js";
+export type { TokenObserver } from "./testkit.js";
+export { loadSeedFile, findSeedFile, DEFAULT_SEED_FILES } from "./seed-file.js";
+export {
+  CoverageRecorder,
+  COVERAGE_GROUPS,
+  DEFAULT_COVERAGE_DIRECTORY,
+  buildReport,
+  clearCoverageDirectory,
+  formatCoverageReport,
+  mergeSnapshots,
+  readCoverageDirectory,
+  type CoverageGroup,
+  type CoverageGroupResult,
+  type CoverageItem,
+  type CoverageReport,
+  type CoverageSnapshot,
+} from "./coverage.js";
+export { ActivityLog, type RequestEntry, type TokenEntry } from "./activity.js";
+export {
+  appLoginUrl,
+  readSignInRequest,
+  resolveLocation,
+  signInFailure,
+  signInForm,
+  type RequestSignInOptions,
+} from "./sign-in-flow.js";

@@ -1,0 +1,10 @@
+node_modules
+dist
+examples
+test
+docs
+coverage
+.git
+.github
+.kinde-testkit
+*.tsbuildinfo

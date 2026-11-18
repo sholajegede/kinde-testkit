@@ -23,7 +23,7 @@ export interface OrganizationMeta {
 export class Directory {
   private readonly userMeta = new Map<string, UserMeta>();
   private readonly orgMeta = new Map<string, OrganizationMeta>();
-  private readonly snapshot: string;
+  private snapshot: string;
 
   constructor(readonly seed: ResolvedSeed) {
     this.snapshot = JSON.stringify(seed);
@@ -34,6 +34,23 @@ export class Directory {
     for (const key of ["users", "organizations", "memberships", "roles", "permissions"] as const) {
       (this.seed[key] as unknown[]).splice(0, this.seed[key].length, ...(original[key] as unknown[]));
     }
+    this.userMeta.clear();
+    this.orgMeta.clear();
+  }
+
+  /** Replaces the whole seed with another resolved seed, and makes it the state reset() returns to. */
+  load(next: ResolvedSeed): void {
+    for (const key of Object.keys(next) as Array<keyof ResolvedSeed>) {
+      const current = this.seed[key];
+      if (Array.isArray(current)) {
+        (current as unknown[]).splice(0, current.length, ...(next[key] as unknown[]));
+      } else {
+        const record = current as Record<string, unknown>;
+        for (const name of Object.keys(record)) delete record[name];
+        Object.assign(record, next[key]);
+      }
+    }
+    this.snapshot = JSON.stringify(this.seed);
     this.userMeta.clear();
     this.orgMeta.clear();
   }

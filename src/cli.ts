@@ -5,24 +5,36 @@ import { parseArgs } from "node:util";
 import { TestkitError } from "./errors.js";
 import { startKindeTestkit } from "./server.js";
 import type { TestkitSeed } from "./seed.js";
+import { findSeedFile, loadSeedFile } from "./seed-file.js";
+import {
+  clearCoverageDirectory,
+  DEFAULT_COVERAGE_DIRECTORY,
+  formatCoverageReport,
+  readCoverageDirectory,
+  type CoverageReport,
+} from "./coverage.js";
+import type { RequestEntry } from "./activity.js";
 import { inspectToken, formatSpan, type Check } from "./inspect.js";
 import { parseEnvFile, runDoctor } from "./doctor.js";
 import { ensureLocalCertificate } from "./certificate.js";
 
 const DEFAULT_URL = process.env.KINDE_TESTKIT_URL ?? "http://localhost:4400";
-const DEFAULT_SEED_FILE = "kinde-testkit.json";
 
 const HELP = `kinde-testkit: a local Kinde issuer for testing apps
 
 Usage
   kinde-testkit start [options]          Start the local issuer
+  kinde-testkit stop                     Stop a running issuer
+  kinde-testkit seed <file>              Replace a running issuer's seed with a JSON, YAML, JS or TS file
   kinde-testkit token [options]          Print a signed test access token
   kinde-testkit users [--json]           List seeded users
   kinde-testkit organizations [--json]   List seeded organizations
   kinde-testkit inspect [token]          Decode a token and check it (reads stdin when no token)
+  kinde-testkit inspect --requests       Show the latest requests the issuer answered
+  kinde-testkit coverage [options]       Show which authentication scenarios your tests covered
   kinde-testkit doctor [options]         Check your app's Kinde settings against the issuer
   kinde-testkit fail <path> [options]    Make an endpoint fail, slow down or hang
-  kinde-testkit reset                    Clear sign-in sessions and failure rules
+  kinde-testkit reset                    Clear sessions, failure rules, deliveries and API changes
   kinde-testkit webhook <type> [options] Send a signed webhook event
   kinde-testkit cert [--dir <dir>]       Create the local HTTPS certificate and print its path
 
@@ -32,11 +44,13 @@ start
   --issuer <url>        Issuer to put in tokens (default http://localhost:<port>)
   --audience <a,b>      Audience values for access tokens
   --client-id <id>      Value for azp
-  --seed <file>         Seed file (default ./kinde-testkit.json when it exists)
+  --seed <file>         Seed file: JSON, YAML, JS or TS (default ./kinde-testkit.json,
+                        .yaml, .yml, .ts, .mts, .js or .mjs, the first that exists)
   --allow-public        Allow binding to a non-loopback interface
   --webhook <url>       Send webhooks to this URL (repeatable)
   --https               Serve HTTPS with a local certificate (needed by @kinde/management-api-js)
   --cert-dir <dir>      Where to keep that certificate (default ./.kinde-testkit)
+  --coverage            Write authentication coverage to ./.kinde-testkit/coverage when it stops
 
 token
   --url <url>           Running issuer (default ${DEFAULT_URL})
@@ -56,6 +70,15 @@ token
 
 inspect
   --url <url>           Also verify the issuer and signature against a running issuer
+  --requests            List the latest requests instead of checking a token
+  --tokens              List the latest issued tokens instead of checking a token
+  --json                Print JSON
+
+coverage
+  --url <url>           Read a running issuer instead of the coverage folder
+  --dir <dir>           Coverage folder (default ./${DEFAULT_COVERAGE_DIRECTORY.replace(/\\/g, "/")})
+  --min <n>             Exit with an error when fewer than n scenarios are covered
+  --clear               Delete the coverage folder, or clear a running issuer's coverage
   --json                Print JSON
 
 doctor
@@ -111,6 +134,12 @@ async function main(argv: string[]): Promise<void> {
       return webhook(rest);
     case "cert":
       return cert(rest);
+    case "stop":
+      return stop(rest);
+    case "seed":
+      return seed(rest);
+    case "coverage":
+      return coverage(rest);
     case undefined:
     case "help":
     case "--help":
@@ -136,11 +165,12 @@ async function start(args: string[]): Promise<void> {
       webhook: { type: "string", multiple: true },
       https: { type: "boolean" },
       "cert-dir": { type: "string" },
+      coverage: { type: "boolean" },
       json: { type: "boolean" },
     },
   });
-  const seedPath = values.seed ?? (existsSync(DEFAULT_SEED_FILE) ? DEFAULT_SEED_FILE : undefined);
-  const seed: TestkitSeed | undefined = seedPath ? readSeed(seedPath) : values.webhook ? {} : undefined;
+  const seedPath = values.seed ?? findSeedFile();
+  const seed: TestkitSeed | undefined = seedPath ? await loadSeedFile(seedPath) : values.webhook ? {} : undefined;
   if (seed && values.webhook) seed.webhooks = [...(seed.webhooks ?? []), ...values.webhook.map((url) => ({ url }))];
 
   const running = await startKindeTestkit({
@@ -152,6 +182,7 @@ async function start(args: string[]): Promise<void> {
     seed,
     allowPublic: values["allow-public"],
     https: values.https ? { certDirectory: values["cert-dir"] } : undefined,
+    coverage: values.coverage,
   });
 
   if (values.json) {
@@ -161,6 +192,7 @@ async function start(args: string[]): Promise<void> {
         issuer: running.issuer,
         discovery: running.discoveryUrl,
         jwks: running.jwksUri,
+        dashboard: `${running.url}/dashboard`,
         users: running.seed.users.length,
         organizations: running.seed.organizations.length,
       })}\n`,
@@ -178,6 +210,7 @@ async function start(args: string[]): Promise<void> {
         `JWKS:          ${running.jwksUri}`,
         `Sign-in page:  ${running.url}/oauth2/auth`,
         `Token:         POST ${running.url}/testkit/token`,
+        `Dashboard:     ${running.url}/dashboard`,
         "",
         `Seed:          ${seedPath ? resolve(seedPath) : "none"}`,
         `Users:         ${running.seed.users.length}`,
@@ -250,8 +283,27 @@ async function inspect(args: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
     allowPositionals: true,
-    options: { url: { type: "string" }, json: { type: "boolean" } },
+    options: { url: { type: "string" }, json: { type: "boolean" }, requests: { type: "boolean" }, tokens: { type: "boolean" } },
   });
+  if (values.requests) {
+    const entries = (await request(values.url ?? DEFAULT_URL, "/testkit/requests")) as RequestEntry[];
+    if (values.json) return void process.stdout.write(`${JSON.stringify(entries, null, 2)}\n`);
+    if (entries.length === 0) return void process.stdout.write("No requests yet.\n");
+    for (const e of entries) {
+      process.stdout.write(`${e.at.slice(11, 19)}  ${String(e.status).padEnd(4)}${e.injected ? "injected " : ""}${e.method.padEnd(7)}${e.path}  ${e.durationMs}ms\n`);
+    }
+    return;
+  }
+  if (values.tokens) {
+    const entries = (await request(values.url ?? DEFAULT_URL, "/testkit/tokens")) as Array<{ at: string; kind: string; subject: string | null; organization: string | null; permissions: string[]; invalid: string | null }>;
+    if (values.json) return void process.stdout.write(`${JSON.stringify(entries, null, 2)}\n`);
+    if (entries.length === 0) return void process.stdout.write("No tokens issued yet.\n");
+    for (const e of entries) {
+      const parts = [e.kind, e.subject ?? "no subject", e.organization ?? "no organization", e.permissions.join(",") || "no permissions"];
+      process.stdout.write(`${e.at.slice(11, 19)}  ${parts.join("  ")}${e.invalid ? `  invalid: ${e.invalid}` : ""}\n`);
+    }
+    return;
+  }
   const raw = positionals[0] ?? (process.stdin.isTTY ? "" : await readStdin());
   const token = raw.trim().replace(/^Bearer\s+/i, "");
   if (!token) {
@@ -375,7 +427,72 @@ async function fail(args: string[]): Promise<void> {
 async function reset(args: string[]): Promise<void> {
   const { values } = parseArgs({ args, options: { url: { type: "string" } } });
   await request(values.url ?? DEFAULT_URL, "/testkit/reset", { method: "POST" });
-  process.stdout.write("Cleared sign-in codes, refresh tokens, signed-up users and failure rules.\n");
+  process.stdout.write("Cleared sign-in sessions, failure rules, webhook deliveries, runtime endpoints and Management API changes.\n");
+}
+
+async function stop(args: string[]): Promise<void> {
+  const { values } = parseArgs({ args, options: { url: { type: "string" } } });
+  const url = values.url ?? DEFAULT_URL;
+  await request(url, "/testkit/stop", { method: "POST" });
+  process.stdout.write(`Stopped the issuer at ${url}.\n`);
+}
+
+async function seed(args: string[]): Promise<void> {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { url: { type: "string" }, json: { type: "boolean" } } });
+  const path = positionals[0] ?? findSeedFile();
+  if (!path) throw new TestkitError("INVALID_REQUEST", "Pass a seed file: kinde-testkit seed kinde-testkit.yaml");
+  const body = await loadSeedFile(path);
+  const result = (await request(values.url ?? DEFAULT_URL, "/testkit/seed", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })) as { users: number; organizations: number; memberships: number };
+  if (values.json) return void process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.stdout.write(
+    `Loaded ${resolve(path)}: ${count(result.users, "user")}, ${count(result.organizations, "organization")}, ${count(result.memberships, "membership")}.\n` +
+      "Sessions, failure rules and deliveries were cleared. The issuer, audience and signing key did not change.\n",
+  );
+}
+
+function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+async function coverage(args: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args,
+    options: { url: { type: "string" }, dir: { type: "string" }, min: { type: "string" }, clear: { type: "boolean" }, json: { type: "boolean" } },
+  });
+  const directory = values.dir ?? DEFAULT_COVERAGE_DIRECTORY;
+  if (values.clear) {
+    if (values.url) await request(values.url, "/testkit/coverage", { method: "DELETE" });
+    else clearCoverageDirectory(directory);
+    process.stdout.write(values.url ? `Cleared coverage at ${values.url}.\n` : `Deleted ${resolve(directory)}.\n`);
+    return;
+  }
+  let report: CoverageReport;
+  let source: string;
+  if (values.url) {
+    report = ((await request(values.url, "/testkit/coverage")) as { report: CoverageReport }).report;
+    source = values.url;
+  } else {
+    const read = readCoverageDirectory(directory);
+    if (read.files === 0) {
+      throw new TestkitError("INVALID_REQUEST", `No coverage recorded in ${resolve(directory)}.`, [
+        "Turn it on with useKindeTestkit({ coverage: true }), startKindeTestkit({ coverage: true }) or kinde-testkit start --coverage.",
+        "Or read a running issuer with --url.",
+      ]);
+    }
+    report = read.report;
+    source = `${read.files} test run${read.files === 1 ? "" : "s"} in ${resolve(directory)}`;
+  }
+  if (values.json) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  else process.stdout.write(`${formatCoverageReport(report)}\n\nFrom ${source}.\n`);
+  const min = values.min === undefined ? undefined : Number(values.min);
+  if (min !== undefined && report.covered < min) {
+    process.stderr.write(`\nCoverage ${report.covered}/${report.total} is below the minimum of ${min}.\n`);
+    process.exitCode = 1;
+  }
 }
 
 async function readStdin(): Promise<string> {
@@ -531,16 +648,6 @@ async function request(base: string, path: string, init?: RequestInit): Promise<
     process.exit(1);
   }
   return body;
-}
-
-function readSeed(path: string): TestkitSeed {
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as TestkitSeed;
-  } catch (error) {
-    throw new TestkitError("SEED_INVALID", `Could not read the seed file at ${resolve(path)}.`, [
-      error instanceof Error ? error.message : String(error),
-    ]);
-  }
 }
 
 function csv(value: string): string[] {

@@ -20,6 +20,10 @@ import {
   type WebhookOptions,
 } from "./webhooks.js";
 import type { Duration, InvalidTokenKind, KindeTokenOptions } from "./types.js";
+import { ActivityLog } from "./activity.js";
+import { CoverageRecorder, DEFAULT_COVERAGE_DIRECTORY } from "./coverage.js";
+import { renderDashboard } from "./dashboard.js";
+import { loadSeedFile } from "./seed-file.js";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const MAX_BODY_BYTES = 64 * 1024;
@@ -31,8 +35,11 @@ export interface StartKindeTestkitOptions {
   issuer?: string;
   audience?: string | string[];
   clientId?: string;
-  seed?: TestkitSeed;
+  /** A seed object, or the path of a JSON, YAML, JavaScript or TypeScript seed file. */
+  seed?: TestkitSeed | string;
   allowPublic?: boolean;
+  /** Write this run's authentication coverage to a folder when the testkit closes. */
+  coverage?: boolean | { directory?: string };
   webhooks?: WebhookOptions;
   https?: boolean | { certDirectory?: string };
 }
@@ -48,6 +55,10 @@ export interface RunningKindeTestkit {
   webhooks: WebhookDispatcher;
   directory: Directory;
   certificatePath: string | null;
+  coverage: CoverageRecorder;
+  activity: ActivityLog;
+  /** Replaces the seed while the issuer runs. reset() returns to the new seed. */
+  loadSeed(seed: TestkitSeed): void;
   reset(): void;
   close(): Promise<void>;
 }
@@ -62,7 +73,8 @@ export async function startKindeTestkit(
       `kinde-testkit will not listen on ${host}. It signs tokens for any identity, so it stays on localhost unless you pass --allow-public (allowPublic: true in code).`,
     );
   }
-  const seed = resolveSeed(options.seed ?? {});
+  const seedInput = typeof options.seed === "string" ? await loadSeedFile(options.seed) : (options.seed ?? {});
+  const seed = resolveSeed(seedInput);
 
   const failures = new FailureInjector();
   let ready!: (value: Context) => void;
@@ -86,16 +98,35 @@ export async function startKindeTestkit(
   });
 
   const { port } = server.address() as AddressInfo;
-  const urlHost = host === "::1" ? "[::1]" : host === "127.0.0.1" ? "localhost" : host;
+  // A wildcard bind is reached through localhost, so URLs and the default issuer use that.
+  const urlHost = host === "::1" ? "[::1]" : host === "127.0.0.1" || host === "0.0.0.0" || host === "::" ? "localhost" : host;
   const url = `${certificate ? "https" : "http"}://${urlHost}:${port}`;
   const testkit = await KindeTestkit.create({
-    issuer: options.issuer ?? options.seed?.issuer ?? url,
-    audience: options.audience ?? options.seed?.audience,
-    clientId: options.clientId ?? options.seed?.clientId,
+    issuer: options.issuer ?? seedInput.issuer ?? url,
+    audience: options.audience ?? seedInput.audience,
+    clientId: options.clientId ?? seedInput.clientId,
   });
+  const coverage = new CoverageRecorder();
+  const activity = new ActivityLog();
+  testkit.observe({
+    accessToken(payload, invalid, token) {
+      coverage.observeAccessToken(payload, invalid);
+      const m2m = Array.isArray(payload.gty) && payload.gty.includes("client_credentials");
+      activity.token(m2m ? "m2m" : "access", payload, invalid, token);
+    },
+    idToken(payload, token) {
+      coverage.hit("identity.id-token");
+      activity.token("id", payload, undefined, token);
+    },
+    anonymous() {
+      coverage.hit("identity.anonymous");
+    },
+  });
+  const observe = (id: string) => coverage.hit(id);
   const directory = new Directory(seed);
   const webhooks = new WebhookDispatcher(testkit, seed, seed.webhooks, options.webhooks);
-  const auth = new AuthorizationServer(testkit, seed, (type, user) => webhooks.emitForUser(type, user), directory);
+  webhooks.observe = observe;
+  const auth = new AuthorizationServer(testkit, seed, (type, user) => webhooks.emitForUser(type, user), directory, observe);
   const management = new ManagementApi(testkit, directory, webhooks);
   const account = new AccountApi(testkit, directory);
   const reset = () => {
@@ -104,7 +135,24 @@ export async function startKindeTestkit(
     webhooks.reset();
     directory.restore();
   };
-  ready({ testkit, auth, seed, failures, webhooks, management, account, reset });
+  const loadSeed = (input: TestkitSeed) => {
+    const next = resolveSeed(input);
+    directory.load(next);
+    webhooks.replaceSeededEndpoints(next.webhooks);
+    reset();
+  };
+  let closed = false;
+  const close = () =>
+    new Promise<void>((resolve, reject) => {
+      if (closed) return resolve();
+      closed = true;
+      if (options.coverage) {
+        coverage.write(typeof options.coverage === "object" ? options.coverage.directory : DEFAULT_COVERAGE_DIRECTORY);
+      }
+      server.closeAllConnections();
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  ready({ testkit, auth, seed, failures, webhooks, management, account, reset, coverage, activity, directory, loadSeed, close });
 
   return {
     url,
@@ -117,12 +165,11 @@ export async function startKindeTestkit(
     webhooks,
     directory,
     certificatePath: certificate?.certPath ?? null,
+    coverage,
+    activity,
+    loadSeed,
     reset,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        server.closeAllConnections();
-        server.close((error) => (error ? reject(error) : resolve()));
-      }),
+    close,
   };
 }
 
@@ -134,18 +181,38 @@ interface Context {
   webhooks: WebhookDispatcher;
   management: ManagementApi;
   account: AccountApi;
+  coverage: CoverageRecorder;
+  activity: ActivityLog;
+  directory: Directory;
+  loadSeed(seed: TestkitSeed): void;
   reset(): void;
+  close(): Promise<void>;
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, context: Context): Promise<void> {
-  const { testkit, auth, seed, failures, webhooks } = context;
+  const { testkit, auth, seed, failures, webhooks, coverage } = context;
   const url = new URL(req.url ?? "/", "http://localhost");
   const { pathname } = url;
   const method = req.method ?? "GET";
+  const internal = pathname.startsWith("/testkit/") || pathname === "/dashboard" || pathname.startsWith("/dashboard/");
+  let injected = false;
+  if (!internal && pathname !== "/favicon.ico") {
+    const started = Date.now();
+    res.once("close", () => {
+      context.activity.request({ method, path: pathname, query: url.searchParams, status: res.statusCode, durationMs: Date.now() - started, injected });
+    });
+  }
 
-  if (!pathname.startsWith("/testkit/")) {
+  if (pathname === "/dashboard" || pathname.startsWith("/dashboard/")) return dashboard(req, res, url, context);
+
+  if (!internal) {
     const failure = failures.take(method, pathname);
     if (failure) {
+      injected = true;
+      if (failure.hang) coverage.hit("outage.timeout");
+      else if (failure.status === 429) coverage.hit("outage.rate-limit");
+      else if (failure.status !== null) coverage.hit("outage.error");
+      if (failure.delayMs > 0) coverage.hit("outage.slow");
       if (failure.hang) return;
       if (failure.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, failure.delayMs));
       if (failure.status !== null) {
@@ -157,8 +224,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, context: Contex
   }
 
   if (await auth.handle(req, res, url, () => readForm(req))) return;
-  if (await context.management.handle(req, res, url, async () => (await readJson(req)) as Record<string, unknown>)) return;
-  if (await context.account.handle(req, res, url)) return;
+  if (await context.management.handle(req, res, url, async () => (await readJson(req)) as Record<string, unknown>)) {
+    if (res.statusCode === 401 || res.statusCode === 403) coverage.hit("api.management-denied");
+    else if (res.statusCode < 400) coverage.hit(method === "GET" ? "api.management-read" : "api.management-write");
+    return;
+  }
+  if (await context.account.handle(req, res, url)) {
+    if (res.statusCode < 400) coverage.hit("api.account");
+    return;
+  }
   if (method === "GET" && pathname === "/testkit/portal") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(
@@ -216,10 +290,120 @@ async function handle(req: IncomingMessage, res: ServerResponse, context: Contex
   }
   if (method === "POST" && pathname === "/testkit/token") {
     const body = await readJson(req);
-    const accessToken = await issueToken(testkit, seed, body);
+    let accessToken: string;
+    try {
+      accessToken = await issueToken(testkit, seed, body);
+    } catch (error) {
+      if (error instanceof TestkitError && error.code === "SEED_NO_MEMBERSHIP") coverage.hit("organization.non-member");
+      throw error;
+    }
     return sendJson(res, 200, { access_token: accessToken, token_type: "Bearer" });
   }
+  if (method === "GET" && pathname === "/testkit/coverage") {
+    return sendJson(res, 200, { report: coverage.report(), snapshot: coverage.snapshot() });
+  }
+  if (method === "DELETE" && pathname === "/testkit/coverage") {
+    coverage.reset();
+    return sendJson(res, 200, { ok: true });
+  }
+  if (method === "GET" && pathname === "/testkit/requests") return sendJson(res, 200, context.activity.requests());
+  if (method === "GET" && pathname === "/testkit/tokens") return sendJson(res, 200, context.activity.tokens());
+  if (method === "POST" && pathname === "/testkit/seed") {
+    const body = await readJson(req);
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      throw new TestkitError("SEED_INVALID", "The seed must be a JSON object.");
+    }
+    context.loadSeed(body as TestkitSeed);
+    return sendJson(res, 200, {
+      ok: true,
+      users: seed.users.length,
+      organizations: seed.organizations.length,
+      memberships: seed.memberships.length,
+    });
+  }
+  if (method === "POST" && pathname === "/testkit/stop") {
+    sendJson(res, 200, { ok: true });
+    res.once("finish", () => void context.close().catch(() => undefined));
+    return;
+  }
   return sendJson(res, 404, { error: "not_found", error_description: `${method} ${pathname} does not exist.` });
+}
+
+async function dashboard(req: IncomingMessage, res: ServerResponse, url: URL, context: Context): Promise<void> {
+  const method = req.method ?? "GET";
+  const { pathname } = url;
+  if (method === "GET" && pathname === "/dashboard") {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.end(
+      renderDashboard({
+        issuer: context.testkit.issuer,
+        seed: context.seed,
+        suspended: (id) => context.directory.isSuspended(id),
+        signIns: (id) => {
+          const user = context.directory.user(id);
+          return user ? context.directory.meta(user).totalSignIns : 0;
+        },
+        tokens: context.activity.tokens(),
+        requests: context.activity.requests(),
+        deliveries: context.webhooks.deliveries(),
+        endpoints: context.webhooks.listEndpoints(),
+        failures: context.failures.list(),
+        coverage: context.coverage.report(),
+        webhookTypes: WEBHOOK_EVENT_TYPES,
+        live: url.searchParams.has("live"),
+        notice: url.searchParams.get("notice"),
+      }),
+    );
+    return;
+  }
+  if (method !== "POST") return sendJson(res, 404, { error: "not_found", error_description: `${method} ${pathname} does not exist.` });
+  // A page on another site could post a form here. Only accept forms from the dashboard itself.
+  const origin = req.headers.origin;
+  if (origin && origin !== "null" && new URL(origin).host !== req.headers.host) {
+    return sendJson(res, 403, { error: "forbidden", error_description: "Dashboard actions only work from the dashboard page." });
+  }
+  const form = Object.fromEntries(new URLSearchParams(await readText(req)));
+  let notice = "Done.";
+  try {
+    if (pathname === "/dashboard/reset") {
+      context.reset();
+      notice = "Reset sign-in sessions, failure rules, webhook deliveries, runtime endpoints and Management API changes.";
+    } else if (pathname === "/dashboard/coverage/reset") {
+      context.coverage.reset();
+      notice = "Cleared coverage.";
+    } else if (pathname === "/dashboard/failures/clear") {
+      context.failures.clear();
+      notice = "Removed every failure rule.";
+    } else if (pathname === "/dashboard/failures") {
+      const rule: FailureRule = { path: form.path ?? "" };
+      if (form.method) rule.method = form.method;
+      if (form.status) rule.status = Number(form.status);
+      if (form.delayMs) rule.delayMs = Number(form.delayMs);
+      if (form.times) rule.times = Number(form.times);
+      if (form.hang) rule.hang = true;
+      const added = context.failures.add(rule);
+      notice = `Added ${added.id} for ${added.path}.`;
+    } else if (pathname.startsWith("/dashboard/failures/") && pathname.endsWith("/remove")) {
+      const id = decodeURIComponent(pathname.slice("/dashboard/failures/".length, -"/remove".length));
+      notice = context.failures.remove(id) ? `Removed ${id}.` : `${id} was already gone.`;
+    } else if (pathname === "/dashboard/webhooks") {
+      const deliveries = await context.webhooks.send({
+        type: form.type ?? "",
+        user: form.user || undefined,
+        invalid: (form.invalid || undefined) as SendWebhookOptions["invalid"],
+        duplicate: form.duplicate ? Number(form.duplicate) : undefined,
+      });
+      const delivered = deliveries.filter((d) => d.delivered).length;
+      notice = `Sent ${form.type}: ${delivered} of ${deliveries.length} deliveries got a 200.`;
+    } else {
+      return sendJson(res, 404, { error: "not_found", error_description: `POST ${pathname} does not exist.` });
+    }
+  } catch (error) {
+    notice = (error as Error).message.replace(/\s+/g, " ").trim();
+  }
+  const anchor = pathname.includes("failures") ? "#failures" : pathname.includes("webhooks") ? "#webhooks" : pathname.includes("coverage") ? "#coverage" : "";
+  res.writeHead(303, { location: `/dashboard?notice=${encodeURIComponent(notice)}${anchor}` });
+  res.end();
 }
 
 function discovery(testkit: KindeTestkit): Record<string, unknown> {

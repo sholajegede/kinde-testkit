@@ -60,6 +60,7 @@ export class AuthorizationServer {
     private readonly seed: ResolvedSeed,
     private readonly emit: UserEventEmitter = () => undefined,
     private readonly directory?: Directory,
+    private readonly observe: (id: string) => void = () => undefined,
   ) {}
 
   async handle(req: IncomingMessage, res: ServerResponse, url: URL, readBody: () => Promise<Record<string, string>>): Promise<boolean> {
@@ -96,6 +97,7 @@ export class AuthorizationServer {
       return sendHtml(res, 400, renderMessage("Sign-in request rejected", (error as Error).message));
     }
     if (params.get("prompt") === "none") {
+      this.observe("session.silent");
       return redirectWithError(res, request, "login_required", "kinde-testkit has no signed-in browser session.");
     }
     sendHtml(
@@ -128,6 +130,7 @@ export class AuthorizationServer {
     }
 
     if (this.directory?.isSuspended(user.id)) {
+      this.observe("identity.suspended");
       return sendHtml(
         res,
         403,
@@ -144,6 +147,7 @@ export class AuthorizationServer {
     let organizationCode: string | null = null;
     if (wanted) {
       if (!memberships.some((m) => m.organizationCode === wanted)) {
+        this.observe("organization.non-member");
         return sendHtml(
           res,
           403,
@@ -212,8 +216,10 @@ export class AuthorizationServer {
       let grant: Grant;
       if (grantType === "authorization_code") {
         grant = this.redeemCode(form, clientId);
+        this.observe("session.sign-in");
       } else if (grantType === "refresh_token") {
         grant = this.redeemRefreshToken(form, clientId);
+        this.observe("session.refresh");
       } else {
         throw new OAuthError(400, "unsupported_grant_type", `kinde-testkit supports authorization_code, refresh_token and client_credentials, not "${grantType ?? ""}".`);
       }
@@ -369,10 +375,12 @@ export class AuthorizationServer {
 
   private revoke(res: ServerResponse, form: Record<string, string>): void {
     if (form.token) this.refreshTokens.delete(form.token);
+    this.observe("session.revoke");
     sendJson(res, 200, {});
   }
 
   private logout(res: ServerResponse, params: URLSearchParams): void {
+    this.observe("session.sign-out");
     const target = params.get("redirect");
     if (target && isHttpUrl(target)) return redirect(res, target);
     sendHtml(res, 200, renderMessage("Signed out", "You are signed out of kinde-testkit. You can close this tab."));
@@ -385,6 +393,7 @@ export class AuthorizationServer {
     const user = createKindeUser({ email: ref.toLowerCase() });
     if (!this.signedUpUsers.has(user.id)) {
       this.signedUpUsers.set(user.id, user);
+      this.observe("identity.unseeded");
       if (this.directory) this.seed.users.push(user);
       this.emit("user.created", user);
     }

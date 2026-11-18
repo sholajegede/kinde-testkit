@@ -98,6 +98,8 @@ export class WebhookDispatcher {
   private nextEndpoint = 1;
   private readonly retryDelaysMs: number[];
   private readonly timeoutMs: number;
+  /** Set by the server to record coverage. */
+  observe: (id: string) => void = () => undefined;
 
   constructor(
     private readonly testkit: KindeTestkit,
@@ -121,6 +123,15 @@ export class WebhookDispatcher {
     const endpoint = { id: `endpoint_${this.nextEndpoint++}`, url: input.url, events: input.events ?? null };
     this.endpoints.push(endpoint);
     return { ...endpoint };
+  }
+
+  /** Replaces the endpoints that came from the seed, as when a new seed is loaded. */
+  replaceSeededEndpoints(endpoints: WebhookEndpointInput[]): void {
+    const seeded = new Set(this.seededEndpoints.map((e) => e.id));
+    this.endpoints = this.endpoints.filter((e) => !seeded.has(e.id));
+    const added = endpoints.map((endpoint) => this.addEndpoint(endpoint));
+    const ids = new Set(added.map((e) => e.id));
+    this.seededEndpoints = this.endpoints.filter((e) => ids.has(e.id));
   }
 
   removeEndpoint(id: string): boolean {
@@ -180,6 +191,9 @@ export class WebhookDispatcher {
         `No webhook endpoint listens for ${options.type}. Add one in the seed's "webhooks", with addEndpoint(), or pass "to".`,
       );
     }
+    if (copies > 1) this.observe("webhook.duplicate");
+    if (options.invalid === "stale") this.observe("webhook.stale");
+    else if (options.invalid) this.observe("webhook.forged");
     if (options.delayMs) await sleep(Math.min(options.delayMs, 60_000));
     const signed = await this.testkit.signPayload(
       event,
@@ -189,7 +203,11 @@ export class WebhookDispatcher {
       const webhookId = `wh_${randomBytes(12).toString("hex")}`;
       return Array.from({ length: copies }, (_, index) => this.deliver(target.url, webhookId, signed, event, index + 1));
     });
-    return Promise.all(jobs);
+    const deliveries = await Promise.all(jobs);
+    if (!options.invalid) {
+      for (const delivery of deliveries) this.observe(delivery.delivered ? "webhook.delivered" : "webhook.failed");
+    }
+    return deliveries;
   }
 
   private async deliver(

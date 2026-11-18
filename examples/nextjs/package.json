@@ -6,7 +6,9 @@
     "dev": "next dev --port 3000",
     "build": "next build",
     "start": "next start --port 3000",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "dev:test": "KINDE_ISSUER_URL=http://localhost:4400 KINDE_CLIENT_ID=kinde_testkit_example KINDE_CLIENT_SECRET=testkitexampleclientsecret0000000000000000 KINDE_SITE_URL=http://localhost:3000 KINDE_POST_LOGIN_REDIRECT_URL=http://localhost:3000 KINDE_POST_LOGOUT_REDIRECT_URL=http://localhost:3000 next dev --port 3000",
+    "test:cypress": "start-server-and-test dev:test http://localhost:3000 'cypress run'"
   },
   "dependencies": {
     "@kinde-oss/kinde-auth-nextjs": "^2.13.2",
@@ -19,7 +21,9 @@
     "@playwright/test": "^1.65.1",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
+    "cypress": "^15.21.2",
     "kinde-testkit": "file:../..",
+    "start-server-and-test": "^2.1.5",
     "typescript": "^5.7.0"
   }
 }

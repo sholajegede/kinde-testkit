@@ -4,3 +4,7 @@ next-env.d.ts
 test-results
 playwright-report
 *.tsbuildinfo
+.kinde-testkit
+cypress/screenshots
+cypress/videos
+cypress/downloads
