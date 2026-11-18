@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1
+
+- Cut the package from 923 kB to 321 kB. The ESM entry points now share one copy of the issuer instead of each bundling its own.
+- With `--json`, CLI errors are one JSON object with `code`, `message` and `details`, so scripts and coding agents can read why a command failed. Error details no longer print twice.
+- Add contract tests that compare discovery, JWKS, M2M token claims and Management API responses with a real Kinde business. Run them with `npm run test:contract`.
+- Add a contents list and a section for coding agents to the README.
+- Fix the Next.js example's Cypress outage test, which failed because the first visit landed on the testkit.
+
 ## 0.6.0
 
 - Add `kinde-testkit/jest` with the same `useKindeTestkit()` and `kindeTest()` as the Vitest helper, for CommonJS and ESM test files.

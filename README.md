@@ -11,6 +11,33 @@ There are two ways to use it:
 
 It also issues machine-to-machine tokens, answers the Management API and Account API calls your app makes, sends signed webhooks, and makes Kinde's endpoints fail or slow down on demand. A local dashboard shows what the testkit issued and answered, a coverage report shows which authentication cases your tests reached, and a `doctor` command checks your app's Kinde settings before a test run. It runs with Vitest, Jest, Playwright and Cypress, from the command line, or in Docker.
 
+## Contents
+
+- [Why it exists](#why-it-exists)
+- [How it works](#how-it-works)
+- [Install](#install)
+- [Quick start with Vitest](#quick-start-with-vitest)
+- [Browser tests with Playwright](#browser-tests-with-playwright)
+- [Browser tests with Cypress](#browser-tests-with-cypress)
+- [Machine-to-machine tokens](#machine-to-machine-tokens)
+- [Webhooks](#webhooks)
+- [Management API and Account API](#management-api-and-account-api)
+- [Testing outages](#testing-outages)
+- [Check your setup](#check-your-setup)
+- [With Kinde's SDKs](#with-kindes-sdks)
+- [Use with a coding agent](#use-with-a-coding-agent)
+- [Checked against real Kinde](#checked-against-real-kinde)
+- [Run the issuer from the command line](#run-the-issuer-from-the-command-line)
+- [Dashboard](#dashboard)
+- [Authentication coverage](#authentication-coverage)
+- [Docker](#docker)
+- [Invalid tokens](#invalid-tokens)
+- [API](#api)
+- [Endpoints](#endpoints)
+- [Token shape](#token-shape)
+- [What this release covers](#what-this-release-covers)
+- [Safety](#safety)
+
 ## Why it exists
 
 Kinde's testing guides start with a test environment, a test user with a password, and a client ID and secret in `.env`. Every test then goes through a real sign-in. That works for a few smoke tests. It gets slow and hard to run in CI once you want to test what your app does with each kind of user, such as:
@@ -423,6 +450,31 @@ KINDE_ISSUER_URL=http://localhost:4400
 ```
 
 The SDK accepts a plain `http://localhost` issuer. Its login, callback, refresh, logout and session-ending routes all work against the testkit. Its `validateToken` accepts kinde-testkit tokens and rejects the wrong-issuer, tampered, unknown-key and unsigned kinds. It does not reject expired tokens, because the SDK handles expiry by refreshing the session.
+
+## Use with a coding agent
+
+Every command takes `--json` and exits with code 1 when something fails. With `--json`, errors are one JSON object, `{ "error": { "code", "message", "details" } }`, so an agent can read the result and the reason without parsing text. A typical loop:
+
+```bash
+npx kinde-testkit start --json &                      # prints the issuer URL and seed counts as JSON
+npx kinde-testkit doctor --json                       # checks the app's .env against the issuer
+npx kinde-testkit token --user admin@example.test --json
+npx kinde-testkit inspect "$TOKEN" --json             # explains why a token was rejected
+npx kinde-testkit coverage --url http://localhost:4400 --json   # lists the auth cases not tested yet
+```
+
+Point the agent at three facts: the app's `KINDE_ISSUER_URL` must be the testkit's URL during tests, users and organizations come from `kinde-testkit.json` or `kinde-testkit.yaml`, and `kinde-testkit coverage` names the missing cases with the one-line change that tests each of them.
+
+## Checked against real Kinde
+
+`test/contract` sends the same requests to a real Kinde business and to the testkit and fails on any field Kinde returns that the testkit does not: discovery endpoints, JWKS keys, M2M token claims, the Management API's error for a missing token, and the fields of users, organizations, roles and permissions. It only reads. Run it with an M2M app that has the `read:users`, `read:organizations`, `read:roles` and `read:permissions` scopes in a test business:
+
+```bash
+KINDE_CONTRACT_DOMAIN=https://<your-business>.kinde.com \
+KINDE_CONTRACT_CLIENT_ID=<client ID> \
+KINDE_CONTRACT_CLIENT_SECRET=<client secret> \
+npm run test:contract
+```
 
 ## Run the issuer from the command line
 

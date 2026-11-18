@@ -38,6 +38,8 @@ describe("sign-in with kinde-testkit", () => {
 
   it("sign-in fails cleanly when Kinde's token endpoint is down", () => {
     cy.kindeInjectFailure({ path: "/oauth2/token", status: 503, times: 1 });
+    // Open the app first. If the first visit of a test redirects to the testkit, Cypress treats the testkit as the top origin.
+    cy.visit("/");
     cy.visit("/api/auth/login?login_hint=admin@example.test");
     cy.origin("http://localhost:4400", () => {
       cy.contains("button", "Continue").click();

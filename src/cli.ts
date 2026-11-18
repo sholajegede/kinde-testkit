@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -644,8 +645,7 @@ async function request(base: string, path: string, init?: RequestInit): Promise<
   if (!response.ok) {
     const details = Array.isArray(body.details) ? (body.details as string[]) : [];
     const message = String(body.error_description ?? `Request failed with ${response.status}`);
-    process.stderr.write(`${body.error ?? "ERROR"}\n\n${message}\n${details.map((d) => `  - ${d}\n`).join("")}`);
-    process.exit(1);
+    failWith(String(body.error ?? "ERROR"), message, details);
   }
   return body;
 }
@@ -678,11 +678,17 @@ function relaunchTrustingLocalCertificate(argv: string[]): boolean {
   process.exit(result.status ?? 1);
 }
 
-if (!relaunchTrustingLocalCertificate(process.argv.slice(2))) main(process.argv.slice(2)).catch((error: unknown) => {
-  if (error instanceof TestkitError) {
-    process.stderr.write(`${error.toString()}\n`);
+/** Prints an error and exits with code 1. With --json the error is one JSON object on stdout, for scripts and agents. */
+function failWith(code: string, message: string, details: string[] = []): never {
+  if (process.argv.includes("--json")) {
+    process.stdout.write(`${JSON.stringify({ error: { code, message, details } })}\n`);
   } else {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`${code}\n\n${message}\n${details.map((d) => `  - ${d}\n`).join("")}`);
   }
   process.exit(1);
+}
+
+if (!relaunchTrustingLocalCertificate(process.argv.slice(2))) main(process.argv.slice(2)).catch((error: unknown) => {
+  if (error instanceof TestkitError) failWith(error.code, error.summary, error.details);
+  failWith("ERROR", error instanceof Error ? error.message : String(error));
 });

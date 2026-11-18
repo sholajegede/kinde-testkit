@@ -1,38 +1,40 @@
-import { defineConfig, type Options } from "tsup";
+import { defineConfig } from "tsup";
 
-// jose ships as ESM only. CommonJS builds bundle it, so require() works in Jest and older tooling.
-const commonJs: Options = { format: ["cjs"], noExternal: ["jose"], target: "node20", sourcemap: true, dts: true };
+// Node entry points build together, so they share one copy of the issuer in common chunks.
+const node = {
+  index: "src/index.ts",
+  vitest: "src/vitest.ts",
+  jest: "src/jest.ts",
+  playwright: "src/playwright.ts",
+  cypress: "src/cypress.ts",
+  cli: "src/cli.ts",
+};
 
 export default defineConfig([
   {
-    entry: { index: "src/index.ts" },
+    entry: node,
     format: ["esm"],
-    dts: true,
+    dts: { entry: { index: node.index, vitest: node.vitest, jest: node.jest, playwright: node.playwright, cypress: node.cypress } },
     clean: true,
     target: "node20",
     sourcemap: true,
+    splitting: true,
+    external: ["vitest", "@playwright/test", "cypress"],
   },
-  { entry: { index: "src/index.ts" }, ...commonJs },
+  // jose ships as ESM only. CommonJS builds bundle it, so require() works in Jest and older tooling.
   {
-    entry: { vitest: "src/vitest.ts" },
-    format: ["esm"],
+    entry: { index: node.index, jest: node.jest, cypress: node.cypress },
+    format: ["cjs"],
     dts: true,
     target: "node20",
-    external: ["vitest"],
-    sourcemap: true,
+    // The output is not minified, so stack traces stay readable without source maps.
+    sourcemap: false,
+    // tsup's CommonJS code splitting emits invalid code, so each CommonJS entry is a full bundle.
+    splitting: false,
+    noExternal: ["jose"],
+    external: ["cypress"],
   },
-  { entry: { jest: "src/jest.ts" }, format: ["esm"], dts: true, target: "node20", sourcemap: true },
-  { entry: { jest: "src/jest.ts" }, ...commonJs },
-  {
-    entry: { playwright: "src/playwright.ts" },
-    format: ["esm"],
-    dts: true,
-    target: "node20",
-    external: ["@playwright/test"],
-    sourcemap: true,
-  },
-  { entry: { cypress: "src/cypress.ts" }, format: ["esm"], dts: true, target: "node20", sourcemap: true },
-  { entry: { cypress: "src/cypress.ts" }, ...commonJs },
+  // Runs in the browser inside Cypress.
   {
     entry: { "cypress-support": "src/cypress-support.ts" },
     format: ["esm"],
@@ -40,11 +42,5 @@ export default defineConfig([
     target: "es2020",
     platform: "browser",
     sourcemap: true,
-  },
-  {
-    entry: { cli: "src/cli.ts" },
-    format: ["esm"],
-    target: "node20",
-    banner: { js: "#!/usr/bin/env node" },
   },
 ]);

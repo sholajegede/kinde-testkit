@@ -1,6 +1,6 @@
 {
   "name": "kinde-testkit",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Test Kinde-authenticated apps offline: a local issuer with a real sign-in flow, Kinde-shaped tokens, reusable auth scenarios, and Vitest and Playwright helpers.",
   "license": "MIT",
   "author": "Shola Jegede <jegedeshola@gmail.com>",
@@ -94,7 +94,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
+    "test:contract": "vitest run test/contract"
   },
   "dependencies": {
     "jose": "^6.2.17",

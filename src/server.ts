@@ -556,7 +556,7 @@ function sendError(res: ServerResponse, error: unknown): void {
     return;
   }
   if (error instanceof TestkitError) {
-    sendJson(res, 400, { error: error.code, error_description: error.message, details: error.details });
+    sendJson(res, 400, { error: error.code, error_description: error.summary, details: error.details });
     return;
   }
   sendJson(res, 500, {
