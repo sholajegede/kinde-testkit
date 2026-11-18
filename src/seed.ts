@@ -32,6 +32,7 @@ export interface TestkitSeed {
     roles?: string[];
     permissions?: string[];
   }>;
+  webhooks?: Array<{ url: string; events?: string[] }>;
   applications?: Array<{
     clientId: string;
     clientSecret?: string;
@@ -48,6 +49,7 @@ export interface ResolvedSeed {
   organizations: KindeOrganization[];
   memberships: KindeMembership[];
   applications: KindeApplication[];
+  webhooks: Array<{ url: string; events?: string[] }>;
 }
 
 export function resolveSeed(input: unknown): ResolvedSeed {
@@ -59,6 +61,19 @@ export function resolveSeed(input: unknown): ResolvedSeed {
   const rawOrganizations = listOf(input.organizations, "organizations", problems);
   const rawMemberships = listOf(input.memberships, "memberships", problems);
   const rawApplications = listOf(input.applications, "applications", problems);
+  const rawWebhooks = listOf(input.webhooks, "webhooks", problems);
+  const webhooks: Array<{ url: string; events?: string[] }> = [];
+  rawWebhooks.forEach((raw, index) => {
+    if (!isRecord(raw) || typeof raw.url !== "string" || !/^https?:\/\//.test(raw.url)) {
+      problems.push(`webhooks[${index}] needs an http or https "url".`);
+      return;
+    }
+    if (raw.events !== undefined && (!Array.isArray(raw.events) || raw.events.some((e) => typeof e !== "string"))) {
+      problems.push(`webhooks[${index}].events must be a list of event type names.`);
+      return;
+    }
+    webhooks.push({ url: raw.url, events: raw.events as string[] | undefined });
+  });
 
   const users: KindeUser[] = [];
   rawUsers.forEach((raw, index) => {
@@ -155,7 +170,7 @@ export function resolveSeed(input: unknown): ResolvedSeed {
   if (problems.length > 0) {
     throw new TestkitError("SEED_INVALID", "The seed has problems. Fix them and start again.", problems);
   }
-  return { users, organizations, memberships, applications };
+  return { users, organizations, memberships, applications, webhooks };
 }
 
 export function findUser(users: KindeUser[], ref: string): KindeUser | undefined {

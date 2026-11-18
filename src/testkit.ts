@@ -243,6 +243,13 @@ export class KindeTestkit {
     return scenarioPrincipal(scenario, this.issuer);
   }
 
+  async signPayload(
+    payload: Record<string, unknown>,
+    invalid?: "bad-signature" | "unknown-key" | "unsigned",
+  ): Promise<string> {
+    return this.sign(payload, invalid);
+  }
+
   private async sign(payload: Record<string, unknown>, invalid?: InvalidTokenKind): Promise<string> {
     if (invalid === "unsigned") {
       const header = base64url.encode(JSON.stringify({ alg: "none", typ: "JWT" }));
