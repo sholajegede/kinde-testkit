@@ -10,6 +10,8 @@ The tests in `tests/auth.spec.ts` cover:
 - signing out
 - an organization the user does not belong to
 
+`tests/webhooks.spec.ts` sends Kinde webhooks to `app/api/webhooks/kinde/route.ts`, which checks them with `@kinde/webhooks` and records each `webhook-id` once. The tests cover a valid event, a duplicated event that is processed once, and four forged or stale webhooks the route must reject.
+
 `tests/outage.spec.ts` runs after those, in its own Playwright project, because failure rules apply to the whole issuer. It takes Kinde's token endpoint down during sign-in, then slows it down by two seconds.
 
 ## Run it

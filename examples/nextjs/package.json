@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@kinde-oss/kinde-auth-nextjs": "^2.13.2",
+    "@kinde/webhooks": "^1.3.3",
     "next": "^16.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
