@@ -9,6 +9,8 @@ There are two ways to use it:
 - **API and unit tests:** mint a token for any user, organization and permission set, including expired, tampered and unsigned tokens, and send it to your API.
 - **Browser tests:** point your app at the testkit, and Playwright signs in as any seeded user through your app's own login route.
 
+It also issues machine-to-machine tokens, makes Kinde's endpoints fail or slow down on demand, and has a `doctor` command that checks your app's Kinde settings before a test run.
+
 ## Why it exists
 
 Kinde's testing guides start with a test environment, a test user with a password, and a client ID and secret in `.env`. Every test then goes through a real sign-in. That works for a few smoke tests. It gets slow and hard to run in CI once you want to test what your app does with each kind of user, such as:
@@ -143,6 +145,8 @@ test("a consultant switches organization", async ({ page, kinde }) => {
 | `kinde.signInAs(email, { org })` | Opens your app's login route, signs in on the testkit page and waits until the app has the session |
 | `kinde.switchOrganization(code)` | Signs the same user in again with another active organization |
 | `kinde.signOut()` | Opens your app's logout route |
+| `kinde.injectFailure(rule)` | Makes a testkit endpoint fail, slow down or hang. Removed when the test ends |
+| `kinde.clearFailures()` | Removes the failures this test added |
 
 The fixture uses `/api/auth/login` and `/api/auth/logout`, the Next.js SDK's routes. Set `kindeLoginPath` and `kindeLogoutPath` in `use` when your app's routes are different. Each test gets its own browser context, so tests run in parallel without sharing sessions.
 
@@ -153,6 +157,100 @@ A user with more than one organization needs `{ org }`, otherwise the fixture st
 ### The sign-in page
 
 The page at `/oauth2/auth` lists the seeded users. You can also type any email address: a user that is not in the seed file signs in without an organization. A user with more than one organization picks one on the next screen, unless the app sent `org_code`.
+
+## Machine-to-machine tokens
+
+Backend services and AI agents authenticate with Kinde through the client credentials grant. kinde-testkit answers it at `/oauth2/token` with tokens in Kinde's M2M shape: `gty: ["client_credentials"]`, `azp` set to the client ID, `scope`, `scp` and `v: "2"`, and no `sub`. Org-scoped apps also get `org_code`.
+
+Seed the apps your services use:
+
+```json
+{
+  "organizations": [{ "code": "org_acme" }],
+  "applications": [
+    { "clientId": "billing_worker", "clientSecret": "billing_secret", "scopes": ["read:invoices", "write:invoices"] },
+    { "clientId": "acme_agent", "organization": "org_acme", "permissions": ["read:users"], "audience": "https://api.example.test" }
+  ]
+}
+```
+
+A seeded app with a `clientSecret` must send that secret. A seeded app with `scopes` is granted only the requested scopes it has, so `scope` holds what was granted and `scp` holds what was asked for, as in Kinde. A client ID that is not seeded gets a token with whatever it asks for.
+
+Your service fetches a token the same way it does from Kinde:
+
+```bash
+curl -s -X POST http://localhost:4400/oauth2/token \
+  -d grant_type=client_credentials -d client_id=acme_agent -d client_secret=x \
+  -d audience=https://api.example.test -d scope=read:users
+```
+
+In tests, mint one directly with `testkit.m2mToken({ clientId, organizationCode, scopes, audience })`, or run `kinde-testkit token --m2m --client-id acme_agent --scope read:users`. M2M tokens take the same `invalid` kinds as user tokens. `principalFromClaims()` reads them as `{ type: "machine", subject: <client ID> }`.
+
+## Testing outages
+
+Your app should handle Kinde being slow or down. kinde-testkit can make any endpoint answer with an error, wait before answering, or never answer:
+
+```ts
+// Vitest, in the same process
+kinde.failures.add({ path: "/oauth2/token", status: 503, times: 1 });
+
+// Playwright, removed again when the test ends
+await kinde.injectFailure({ path: "/.well-known/jwks.json", delayMs: 3000 });
+```
+
+```bash
+kinde-testkit fail /oauth2/token --status 429 --times 3
+kinde-testkit fail --list
+kinde-testkit fail --clear
+```
+
+| Rule field | What it does |
+| --- | --- |
+| `path` | An exact path such as `/oauth2/token`, or a prefix such as `/oauth2/*` |
+| `method` | Only match this HTTP method |
+| `status` | Answer with this status. 429 and 503 also send `Retry-After` |
+| `delayMs` | Wait this long first, up to 60 seconds |
+| `hang` | Never answer, so the client hits its own timeout |
+| `times` | Apply to the next n matching requests, then remove the rule |
+
+Failure rules apply to the whole issuer, so every test using it sees them. In Playwright, put outage tests in their own project that runs after the others. [`examples/nextjs`](examples/nextjs) has an `outage` project that takes the token endpoint down during sign-in, then slows it down. `/testkit/` control endpoints never fail.
+
+`kinde-testkit reset` (or `POST /testkit/reset`, or `kinde.reset()` in Vitest) clears sign-in codes, refresh tokens, users who signed in with an unseeded email, and failure rules.
+
+## Check your setup
+
+`kinde-testkit doctor` reads `.env`, `.env.local`, `.env.test` and `.env.test.local`, plus any `KINDE_` variables in your shell, and checks them against the running issuer:
+
+```
+✓ Issuer running       http://localhost:4400 answers, issuer http://localhost:4400.
+✓ Discovery            The discovery document names the same issuer.
+✓ JWKS                 1 RS256 signing key at /.well-known/jwks.json.
+✓ Seed                 3 seeded users.
+✗ KINDE_ISSUER_URL     https://acme.kinde.com is a real Kinde domain. Tests would sign in against Kinde, not the testkit.
+✓ KINDE_CLIENT_ID      Set. The testkit accepts any client ID.
+✗ KINDE_CLIENT_SECRET  The Next.js SDK only accepts 40 to 60 letters and digits.
+✓ KINDE_SITE_URL       http://localhost:3000.
+```
+
+It exits with code 1 when a check fails, so it can run before your test suite in CI.
+
+`kinde-testkit inspect <token>` decodes any Kinde or testkit token and says what is wrong with it. Pipe a token in, or paste one. With `--url`, it also checks the issuer and verifies the signature:
+
+```bash
+kinde-testkit token --user admin@example.test --invalid expired | kinde-testkit inspect --url http://localhost:4400
+```
+
+```
+Access token
+
+Subject        kp_admin
+Organization   org_acme
+Permissions    ["projects:read"]
+
+✓ Algorithm            RS256, the algorithm Kinde signs with.
+✗ Expiry               Expired 1h 0m ago.
+✓ Signature            Verified against http://localhost:4400/.well-known/jwks.json.
+```
 
 ## With Kinde's SDKs
 
@@ -209,6 +307,9 @@ When `kinde-testkit.json` exists in the current folder, `start` loads it. Pass `
     { "user": "kp_admin", "organization": "org_acme", "roles": ["admin"], "permissions": ["projects:read", "projects:delete"] },
     { "user": "kp_consultant", "organization": "org_acme", "roles": ["viewer"], "permissions": ["projects:read"] },
     { "user": "kp_consultant", "organization": "org_globex", "roles": ["admin"], "permissions": ["projects:delete"] }
+  ],
+  "applications": [
+    { "clientId": "acme_agent", "organization": "org_acme", "scopes": ["read:users"] }
   ]
 }
 ```
@@ -223,6 +324,11 @@ A token for a seeded user takes its roles and permissions from the membership in
 | `kinde-testkit token` | Print a signed access token. Options: `--user`, `--org`, `--sub`, `--permissions`, `--roles`, `--expires-in`, `--invalid`, `--url`, `--json` |
 | `kinde-testkit users` | List seeded users |
 | `kinde-testkit organizations` | List seeded organizations |
+| `kinde-testkit token --m2m` | Print a machine-to-machine token. Options: `--client-id`, `--scope`, `--org`, `--permissions`, `--expires-in`, `--invalid` |
+| `kinde-testkit inspect [token]` | Decode a token and check it. Reads stdin when no token is given. Options: `--url`, `--json` |
+| `kinde-testkit doctor` | Check your app's Kinde settings against the issuer. Options: `--url`, `--env-file`, `--json` |
+| `kinde-testkit fail <path>` | Add a failure rule. Options: `--status`, `--delay`, `--hang`, `--times`, `--method`, `--list`, `--clear` |
+| `kinde-testkit reset` | Clear sign-in sessions and failure rules |
 
 Every command takes `--json` for CI scripts and coding agents.
 
@@ -262,10 +368,13 @@ import {
 
 - `scenario()` builds a caller: `.user()`, `.organization()`, `.withoutOrganization()`, `.role()`, `.permissions()`, `.claims()`, then `.authenticated()` or `.unauthenticated()`. The result is plain JSON, so you can keep scenarios in a shared file and import them anywhere.
 - `createKindeUser()` gives a user a stable id derived from the email, so the same email always maps to the same `kp_` id. `createKindeOrganization()` and `createMembership()` cover organizations and per-organization roles.
-- `KindeTestkit.create({ issuer, audience, clientId, accessTokenExpiresIn, idTokenExpiresIn })` holds a signing key. Access tokens last 24 hours and ID tokens 1 hour by default, the same as Kinde's defaults. Use `token()`, `tokenFor(scenario)`, `idTokenFor(scenario)`, `headersFor(scenario)`, `principalFor(scenario)` and `jwks()`.
-- `startKindeTestkit({ port, seed, audience })` runs the issuer in-process and returns `{ url, issuer, jwksUri, testkit, close() }`.
+- `KindeTestkit.create({ issuer, audience, clientId, accessTokenExpiresIn, idTokenExpiresIn })` holds a signing key. Access tokens last 24 hours and ID tokens 1 hour by default, the same as Kinde's defaults. Use `token()`, `tokenFor(scenario)`, `idTokenFor(scenario)`, `m2mToken()`, `headersFor(scenario)`, `principalFor(scenario)` and `jwks()`.
+- `startKindeTestkit({ port, seed, audience })` runs the issuer in-process and returns `{ url, issuer, jwksUri, testkit, failures, reset(), close() }`.
+- `inspectToken(token, { issuerUrl })` and `runDoctor({ url, env })` are the functions behind `inspect` and `doctor`. Both return a list of checks with `pass`, `warn` or `fail`.
 - `createKindeToken(options)` signs with a shared default testkit whose issuer is `http://localhost:4400`, or `KINDE_TESTKIT_ISSUER` when set.
-- `principalFromClaims(claims)` turns verified claims into `{ subject, issuer, organization, roles, permissions }`.
+- `principalFromClaims(claims)` turns verified claims into `{ type, subject, issuer, organization, roles, permissions }`. `type` is `"user"`, or `"machine"` for M2M tokens.
+
+From `kinde-testkit/vitest`: `useKindeTestkit()`, which also exposes `failures` and `reset()`, and `kindeTest()`.
 
 From `kinde-testkit/playwright`: `test` and `expect` with the `kinde` fixture, the `KindeTestOptions` type for your config, and `createKindeFixture(page, options)` for building the fixture into your own `test.extend()`.
 
@@ -276,12 +385,14 @@ From `kinde-testkit/playwright`: `test` and `expect` with the `kinde` fixture, t
 | `GET /.well-known/openid-configuration` | OIDC discovery |
 | `GET /.well-known/jwks`, `/.well-known/jwks.json` | Public signing key |
 | `GET /oauth2/auth` | Sign-in page. Takes `client_id`, `redirect_uri`, `response_type=code`, `state`, `scope`, `nonce`, `audience`, `org_code`, `login_hint`, `prompt=none` and PKCE |
-| `POST /oauth2/token` | `authorization_code` and `refresh_token` grants. Client credentials in the body or with HTTP Basic. Refresh tokens rotate on every use |
+| `POST /oauth2/token` | `authorization_code`, `refresh_token` and `client_credentials` grants. Client credentials in the body or with HTTP Basic. Refresh tokens rotate on every use |
 | `GET /oauth2/v2/user_profile` | Profile for the Bearer token's user |
 | `POST /oauth2/revoke` | Revokes a refresh token |
 | `GET /logout?redirect=<url>` | Signs out and redirects |
 | `POST /testkit/token` | Mints a token directly, used by `kinde-testkit token` |
 | `GET /testkit/users`, `/testkit/organizations`, `/testkit/memberships`, `/testkit/health` | Seed data and a health check |
+| `GET`, `POST`, `DELETE /testkit/failures`, `DELETE /testkit/failures/<id>` | List, add and remove failure rules |
+| `POST /testkit/reset` | Clear sign-in state and failure rules |
 
 ## Token shape
 
@@ -325,7 +436,9 @@ ID tokens carry `amr`, `aud` (the client ID), `auth_time`, `email`, `email_verif
 | Vitest helper and Playwright fixture | Implemented |
 | Accepted by `@kinde/jwt-validator` and the Next.js SDK's `validateToken` | Tested |
 | Sign-in, organization switching and sign-out through `@kinde-oss/kinde-auth-nextjs` | Tested in Chrome with Playwright |
-| Client credentials (machine-to-machine) grant | Not implemented |
+| Client credentials grant with Kinde's M2M token shape, seeded and org-scoped apps | Implemented |
+| Failure injection: error status, delay, hang, by path, method and count | Implemented, tested through the Next.js SDK |
+| `doctor`, `inspect` and `reset` commands | Implemented |
 | Management API and Account API | Not implemented |
 | Webhooks | Not implemented |
 

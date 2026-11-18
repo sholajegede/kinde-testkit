@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Add the `client_credentials` grant with Kinde's machine-to-machine token shape (`gty`, `scope`, `scp`, `v`, no `sub`), seeded `applications` with secrets, scopes, permissions, audiences and organizations, `testkit.m2mToken()`, and `kinde-testkit token --m2m`.
+- Add failure injection: make any endpoint answer with an error status, wait, or hang, matched by path, prefix, method and count. Use it from Vitest (`kinde.failures`), Playwright (`kinde.injectFailure()`), the CLI (`kinde-testkit fail`) or HTTP (`/testkit/failures`).
+- Add `kinde-testkit doctor`, which checks an app's Kinde settings against the running issuer, `kinde-testkit inspect`, which decodes a token and explains what is wrong with it, and `kinde-testkit reset`.
+- `principalFromClaims()` now returns `type`, which is `"machine"` for M2M tokens, with the client ID as `subject`.
+- The Next.js example adds outage tests that run through the real SDK.
+
 ## 0.2.2
 
 - Show the README diagrams as images, so they display on npm as well as GitHub.
