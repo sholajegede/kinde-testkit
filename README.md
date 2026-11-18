@@ -19,6 +19,7 @@ It also issues machine-to-machine tokens, answers the Management API and Account
 - [Quick start with Vitest](#quick-start-with-vitest)
 - [Browser tests with Playwright](#browser-tests-with-playwright)
 - [Browser tests with Cypress](#browser-tests-with-cypress)
+- [Component tests with React Testing Library](#component-tests-with-react-testing-library)
 - [Machine-to-machine tokens](#machine-to-machine-tokens)
 - [Device sign-in, introspection and client registration](#device-sign-in-introspection-and-client-registration)
 - [Webhooks](#webhooks)
@@ -189,7 +190,9 @@ test("a consultant switches organization", async ({ page, kinde }) => {
 
 | Fixture method | What it does |
 | --- | --- |
-| `kinde.signInAs(email, { org })` | Opens your app's login route, signs in on the testkit page and waits until the app has the session |
+| `kinde.signInAs(email, { org, connection, providerResult, mfa })` | Opens your app's login route, signs in on the testkit page and waits until the app has the session. The other options are under [Social sign-in and MFA](#social-sign-in-and-mfa) |
+| `kinde.authenticateAs(identity)` | Signs in as a seeded user by email, or as an identity described inline, with no seed entry |
+| `kinde.saveState(path)` | Saves the signed-in browser state for `test.use({ storageState })` |
 | `kinde.switchOrganization(code)` | Signs the same user in again with another active organization |
 | `kinde.signOut()` | Opens your app's logout route |
 | `kinde.injectFailure(rule)` | Makes a testkit endpoint fail, slow down or hang. Removed when the test ends |
@@ -199,6 +202,36 @@ test("a consultant switches organization", async ({ page, kinde }) => {
 The fixture uses `/api/auth/login` and `/api/auth/logout`, the Next.js SDK's routes. Set `kindeLoginPath` and `kindeLogoutPath` in `use` when your app's routes are different. Each test gets its own browser context, so tests run in parallel without sharing sessions.
 
 A user with more than one organization needs `{ org }`, otherwise the fixture stops with an error that names the user. Signing in to an organization the user does not belong to also fails, the same way Kinde refuses it.
+
+To test a user who is not in the seed file, describe the identity in the test. The testkit creates the user, the organization if it is new, and a membership with exactly these roles and permissions. Calling it again with other permissions changes them, so you can check what the app does when a user's access changes:
+
+```ts
+test("an auditor can delete projects", async ({ page, kinde }) => {
+  await kinde.authenticateAs({
+    email: `auditor+w${test.info().parallelIndex}@example.test`,
+    organization: "org_acme",
+    roles: ["auditor"],
+    permissions: ["projects:read", "projects:delete"],
+  });
+  await page.goto("/projects");
+  await expect(page.getByRole("button", { name: "Delete Customer portal" })).toBeVisible();
+});
+```
+
+Putting `parallelIndex` in the email gives each Playwright worker its own identity, so parallel workers never change each other's users. `reset()` removes these identities.
+
+To sign in once and reuse the session, save the browser state and start other tests with it. Tokens stay valid while the same testkit runs, because it keeps one signing key until it stops:
+
+```ts
+// auth.setup.ts, in a setup project the other projects depend on
+setup("sign in as admin", async ({ kinde }) => {
+  await kinde.authenticateAs("admin@example.test");
+  await kinde.saveState("playwright/.auth/admin.json");
+});
+
+// in a test file
+test.use({ storageState: "playwright/.auth/admin.json" });
+```
 
 [`examples/nextjs`](examples/nextjs) is a working Next.js app on `@kinde-oss/kinde-auth-nextjs` with these tests.
 
@@ -238,7 +271,8 @@ it("a viewer cannot delete projects", () => {
 
 | Command | What it does |
 | --- | --- |
-| `cy.kindeSignIn(email, { org, loginPath })` | Signs in through your app's login route with requests, then opens the app's callback. Fast, and needs no `cy.origin()` |
+| `cy.kindeSignIn(email, { org, loginPath, connection, providerResult, mfa })` | Signs in through your app's login route with requests, then opens the app's callback. Fast, and needs no `cy.origin()` |
+| `cy.kindeAuthenticateAs(identity)` | Signs in as a seeded user by email, or as an identity described inline with its organization, roles and permissions |
 | `cy.kindeSignOut({ logoutPath })` | Opens your app's logout route |
 | `cy.kindeToken(options)` | Yields an access token, with the same options as `POST /testkit/token` |
 | `cy.kindeInjectFailure(rule)` | Makes a testkit endpoint fail, slow down or hang. Removed when the test ends |
@@ -251,6 +285,51 @@ it("a viewer cannot delete projects", () => {
 ### The sign-in page
 
 The page at `/oauth2/auth` lists the seeded users. You can also type any email address: a user that is not in the seed file signs in without an organization. A user with more than one organization picks one on the next screen, unless the app sent `org_code`.
+
+### Social sign-in and MFA
+
+Under **Test options**, the sign-in page can sign in with a social connection, such as Google or GitHub, and add a multi-factor step. Each one can also fail, so you can test what your app does when sign-in does not finish:
+
+| Option | Values | What the app gets |
+| --- | --- | --- |
+| `connection` | `email` (default), `google`, `github`, `microsoft`, `apple` and other providers | A session whose tokens have `amr: ["google"]`, for example |
+| `providerResult` | `success` (default), `cancelled`, `error` | `cancelled` sends the app `error=access_denied`, and `error` sends `error=server_error` |
+| `mfa` | `none` (default), `passed`, `failed`, `cancelled` | `passed` adds `"mfa"` to `amr`. `failed` keeps the user on the sign-in page with a wrong-code error. `cancelled` sends the app `error=access_denied` |
+
+```ts
+await kinde.signInAs("admin@example.test", { connection: "google", mfa: "passed" });
+await kinde.signInAs("admin@example.test", { connection: "github", providerResult: "cancelled" });
+cy.kindeSignIn("admin@example.test", { mfa: "failed" });
+```
+
+For an outcome that fails, `signInAs()` returns once the app has the error, or once the sign-in page shows it, and the test checks what happens next. Kinde's Next.js SDK, for example, answers an OAuth error by starting sign-in again.
+
+Kinde does not publish the `amr` values it uses for social and MFA sign-ins. The testkit uses the connection name and `"mfa"`, the value RFC 8176 defines. If your app checks other values, mint tokens with `authMethods` instead.
+
+## Component tests with React Testing Library
+
+`kinde-testkit/react` renders components that call `useKindeAuth()` from `@kinde-oss/kinde-auth-react` or `useKindeBrowserClient()` from `@kinde-oss/kinde-auth-nextjs`. It gives the SDK's own context real tokens signed for a scenario, read through the same `@kinde/js-utils` functions the SDKs use, so `getPermission()`, `getFlag()` and `getOrganization()` answer from the token as they do in the browser:
+
+```ts
+import { fireEvent, render, screen } from "@testing-library/react";
+import { scenario } from "kinde-testkit";
+import { kindeAuth } from "kinde-testkit/react";
+
+it("hides the delete button from a viewer", async () => {
+  const auth = await kindeAuth(scenario().user({ email: "viewer@example.test" }).organization("org_acme").permissions(["projects:read"]).authenticated());
+  render(<Projects />, { wrapper: auth.wrapper });
+  expect(await screen.findByText("Read only")).toBeTruthy();
+});
+
+it("starts sign-in from the button", async () => {
+  const auth = await kindeAuth(scenario().unauthenticated());
+  render(<Projects />, { wrapper: auth.wrapper });
+  fireEvent.click(screen.getByText("Sign in"));
+  expect(auth.calls).toEqual([{ method: "login", args: [] }]);
+});
+```
+
+`login()`, `logout()`, `register()` and `switchOrg()` do not leave the page. They are recorded in `auth.calls` so the test can check them. Pass `featureFlags` to put flags in the token. The component tests run in jsdom, so they need no testkit server. `kinde-testkit/react` is ESM only and needs `react`, `@kinde-oss/kinde-auth-react` and `@kinde/js-utils`, which the React and Next.js SDKs install.
 
 ## Machine-to-machine tokens
 
@@ -403,7 +482,7 @@ A role's permissions are added to the member's own permissions, in tokens and in
 
 ## Testing outages
 
-Your app should handle Kinde being slow or down. kinde-testkit can make any endpoint answer with an error, wait before answering, or never answer:
+Your app should handle Kinde being slow, down or broken. kinde-testkit can make any endpoint answer with an error, wait before answering, never answer, or answer with a body your client cannot use:
 
 ```ts
 // Vitest, in the same process
@@ -415,6 +494,7 @@ await kinde.injectFailure({ path: "/.well-known/jwks.json", delayMs: 3000 });
 
 ```bash
 kinde-testkit fail /oauth2/token --status 429 --times 3
+kinde-testkit fail /.well-known/jwks.json --malformed invalid-json
 kinde-testkit fail --list
 kinde-testkit fail --clear
 ```
@@ -426,6 +506,7 @@ kinde-testkit fail --clear
 | `status` | Answer with this status. 429 and 503 also send `Retry-After` |
 | `delayMs` | Wait this long first, up to 60 seconds |
 | `hang` | Never answer, so the client hits its own timeout |
+| `malformed` | Answer with `invalid-json`, an `empty` body, an `html` error page or `unexpected-json`. The status is 200 unless you set one |
 | `times` | Apply to the next n matching requests, then remove the rule |
 
 Failure rules apply to the whole issuer, so every test using it sees them. In Playwright, put outage tests in their own project that runs after the others. [`examples/nextjs`](examples/nextjs) has an `outage` project that takes the token endpoint down during sign-in, then slows it down. `/testkit/` control endpoints never fail.
@@ -602,17 +683,17 @@ npx kinde-testkit coverage
 ```
 Kinde authentication coverage
 
-Identity              6/6
+Identity              6/8
 Organizations         4/5
 Permissions           5/5
 Token validation      3/8
-Sessions              4/6
+Sessions              4/7
 Machine-to-machine    0/4
 Kinde APIs            2/4
 Webhooks              5/5
-Outages               2/4
+Outages               2/5
 
-Overall: 31/47
+Overall: 31/51
 
 Not covered:
   Organizations: Organization claim missing. Mint a token with invalid: "missing-organization".
@@ -720,6 +801,8 @@ import {
 
 From `kinde-testkit/vitest` and `kinde-testkit/jest`: `useKindeTestkit()`, which also exposes `failures`, `webhooks`, `directory`, `coverage`, `activity`, `loadSeed()` and `reset()`, and `kindeTest()`.
 
+From `kinde-testkit/react`: `kindeAuth(scenario, { featureFlags, testkit, token })` and `KindeTestProvider`.
+
 From `kinde-testkit/cypress`: `setupKindeTestkit(on, config, { start, url })`. From `kinde-testkit/cypress/support`: the `cy.kinde*` commands and their types.
 
 From `kinde-testkit/playwright`: `test` and `expect` with the `kinde` fixture, the `KindeTestOptions` type for your config, and `createKindeFixture(page, options)` for building the fixture into your own `test.extend()`.
@@ -738,6 +821,7 @@ From `kinde-testkit/playwright`: `test` and `expect` with the `kinde` fixture, t
 | `POST /oauth2/introspect` | Token introspection. Needs a Bearer token |
 | `POST /oauth2/register` | Dynamic client registration for MCP connectors |
 | `POST /testkit/device` | Approves or denies a pending device code without a browser |
+| `POST /testkit/identities` | Creates or updates a user, organization and membership with the given roles and permissions, as `authenticateAs()` does |
 | `GET /logout?redirect=<url>` | Signs out and redirects |
 | `/api/v1/...` | Management API: users, organizations, members, roles and permissions |
 | `GET /account_api/v1/...` | Account API: permissions, roles, feature flags, properties and entitlements for the token's user |
@@ -795,7 +879,9 @@ ID tokens carry `amr`, `aud` (the client ID), `auth_time`, `email`, `email_verif
 | Refresh tokens with rotation, revocation, logout and user profile | Implemented |
 | Device authorization flow, token introspection and dynamic client registration | Implemented. Error responses checked against a real Kinde business. The device response has no `qr_code` |
 | Audience allow-list for seeded M2M apps | Implemented, with Kinde's error message |
-| Vitest and Jest helpers, Playwright fixture, Cypress commands | Implemented. Jest runs in the test suite. Cypress's sign-in steps are tested against the Next.js SDK |
+| Vitest and Jest helpers, Playwright fixture, Cypress commands | Implemented. Jest runs in the test suite. Cypress runs against the Next.js example |
+| React Testing Library helper for `useKindeAuth()` and `useKindeBrowserClient()` | Implemented, tested with both SDKs |
+| Inline identities with `authenticateAs()` and saved sign-in state | Implemented, tested in Chrome with Playwright |
 | Accepted by `@kinde/jwt-validator` and the Next.js SDK's `validateToken` | Tested |
 | Sign-in, organization switching and sign-out through `@kinde-oss/kinde-auth-nextjs` | Tested in Chrome with Playwright |
 | Client credentials grant with Kinde's M2M token shape, seeded and org-scoped apps | Implemented |
@@ -807,7 +893,9 @@ ID tokens carry `amr`, `aud` (the client ID), `auth_time`, `email`, `email_verif
 | Dashboard, request and token log | Implemented |
 | Authentication coverage report | Implemented |
 | Docker image | Dockerfile in the repository |
-| Passwords, MFA, social sign-in and SAML | Not emulated. The sign-in page signs in any seeded user or email directly |
+| Social sign-in and MFA | Simulated: the method, a passed or failed MFA step, and cancelled or failed providers. Kinde's `amr` values for them are not published |
+| Passwords and SAML | Not emulated. The sign-in page signs in any seeded user or email directly |
+| Malformed responses | Implemented: invalid JSON, empty bodies, HTML error pages and unexpected JSON |
 | Kinde's hosted pages, such as the self-serve portal | Not emulated. `portal_link` returns a placeholder page |
 | Signed webhooks for the 16 event types in `@kinde/webhooks`, billing events with your data, retries, duplicates, forged and stale events | Implemented, tested with `@kinde/webhooks` and a Next.js route |
 

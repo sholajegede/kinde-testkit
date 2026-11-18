@@ -47,6 +47,31 @@ function displayName(user: KindeUser): string {
   return [user.givenName, user.familyName].filter(Boolean).join(" ") || user.email || user.id;
 }
 
+const SOCIAL_CONNECTIONS = ["google", "github", "microsoft", "apple", "facebook", "gitlab", "linkedin", "slack", "x"];
+
+function select(id: string, label: string, options: Array<[string, string]>): string {
+  return `<label for="${id}">${label}</label><select id="${id}" name="${id}" style="width:100%;height:38px;padding:0 10px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--ink);font:inherit">${options
+    .map(([value, text]) => `<option value="${value}">${escapeHtml(text)}</option>`)
+    .join("")}</select>`;
+}
+
+/** Choices for testing other sign-in methods and their failures. */
+function testOptions(): string {
+  return `<h2>Test options</h2>${select("connection", "Sign in with", [
+    ["email", "Email"],
+    ...SOCIAL_CONNECTIONS.map((c): [string, string] => [c, c === "x" ? "X" : c[0]!.toUpperCase() + c.slice(1)]),
+  ])}${select("provider_result", "Provider result", [
+    ["success", "Signed in"],
+    ["cancelled", "User cancelled"],
+    ["error", "Provider error"],
+  ])}${select("mfa", "Multi-factor authentication", [
+    ["none", "Not required"],
+    ["passed", "Passed"],
+    ["failed", "Wrong code"],
+    ["cancelled", "Cancelled"],
+  ])}`;
+}
+
 export function renderSignIn(options: {
   request: string;
   users: LoginPageUser[];
@@ -77,7 +102,7 @@ export function renderSignIn(options: {
       options.error ? `<div class="error" role="alert">${escapeHtml(options.error)}</div>` : ""
     }<form method="post" action="/oauth2/auth/login"><input type="hidden" name="request" value="${escapeHtml(options.request)}"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="off" value="${escapeHtml(options.loginHint ?? "")}" placeholder="name@example.test"><button class="primary" type="submit">Continue</button>${
       users ? `<h2>Seeded users</h2><div class="list">${users}</div>` : ""
-    }</form>`,
+    }${testOptions()}</form>`,
   );
 }
 
@@ -85,7 +110,12 @@ export function renderOrganizationPicker(options: {
   request: string;
   user: KindeUser;
   organizations: KindeOrganization[];
+  /** Form fields to send again with the chosen organization, such as the sign-in method. */
+  carry?: Record<string, string>;
 }): string {
+  const carried = Object.entries(options.carry ?? {})
+    .map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`)
+    .join("");
   const choices = options.organizations
     .map(
       (org) =>
@@ -94,7 +124,7 @@ export function renderOrganizationPicker(options: {
     .join("");
   return layout(
     "Choose an organization",
-    `<h1>Choose an organization</h1><p>${escapeHtml(options.user.email ?? options.user.id)} belongs to more than one organization.</p><form method="post" action="/oauth2/auth/login"><input type="hidden" name="request" value="${escapeHtml(options.request)}"><input type="hidden" name="user" value="${escapeHtml(options.user.email ?? options.user.id)}"><div class="list" style="margin-top:20px">${choices}</div></form>`,
+    `<h1>Choose an organization</h1><p>${escapeHtml(options.user.email ?? options.user.id)} belongs to more than one organization.</p><form method="post" action="/oauth2/auth/login"><input type="hidden" name="request" value="${escapeHtml(options.request)}"><input type="hidden" name="user" value="${escapeHtml(options.user.email ?? options.user.id)}">${carried}<div class="list" style="margin-top:20px">${choices}</div></form>`,
   );
 }
 

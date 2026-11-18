@@ -84,6 +84,27 @@ describe("failure injection", () => {
     expect(() => injector.add({ path: "/oauth2/token", status: 500, times: 0 })).toThrow(/times/);
   });
 
+  it("answers with a malformed body", async () => {
+    const jwks = () => fetch(`${kinde.url}/.well-known/jwks.json`);
+    kinde.failures.add({ path: "/.well-known/jwks.json", malformed: "invalid-json", times: 1 });
+    const broken = await jwks();
+    expect(broken.status).toBe(200);
+    await expect(broken.json()).rejects.toThrow();
+
+    kinde.failures.add({ path: "/.well-known/jwks.json", malformed: "html", status: 502, times: 1 });
+    const html = await jwks();
+    expect([html.status, html.headers.get("content-type")]).toEqual([502, "text/html; charset=utf-8"]);
+
+    kinde.failures.add({ path: "/.well-known/jwks.json", malformed: "empty", times: 1 });
+    expect(await (await jwks()).text()).toBe("");
+
+    kinde.failures.add({ path: "/.well-known/jwks.json", malformed: "unexpected-json", times: 1 });
+    expect(await (await jwks()).json()).not.toHaveProperty("keys");
+
+    expect(((await (await jwks()).json()) as { keys: unknown[] }).keys).toHaveLength(1);
+    expect(() => new FailureInjector().add({ path: "/oauth2/token", malformed: "garbage" as never })).toThrow(/malformed/);
+  });
+
   it("reset clears sessions and failure rules", async () => {
     kinde.failures.add({ path: "/oauth2/token", status: 500 });
     expect((await fetch(`${kinde.url}/testkit/reset`, { method: "POST" })).status).toBe(200);

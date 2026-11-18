@@ -64,6 +64,8 @@ interface Grant {
   audience: string[];
   nonce: string | null;
   authTime: number;
+  /** The amr claim. Defaults to ["email"]. */
+  authMethods?: string[];
 }
 
 interface PendingCode extends Grant {
@@ -183,6 +185,19 @@ export class AuthorizationServer {
       return sendHtml(res, 400, renderMessage("Sign-in request rejected", "The sign-in form is missing its request. Start again from the app."));
     }
     const encoded = encodeRequest(request);
+    const connection = (form.connection || "email").trim().toLowerCase();
+    const providerResult = form.provider_result || "success";
+    const mfa = form.mfa || "none";
+    if (!/^[a-z0-9_-]{1,40}$/.test(connection) || !["success", "cancelled", "error"].includes(providerResult) || !["none", "passed", "failed", "cancelled"].includes(mfa)) {
+      return sendHtml(res, 400, renderSignIn({ request: encoded, users: this.loginPageUsers(), requiredOrganization: request.orgCode ?? undefined, error: "The test options on the sign-in form are not valid." }));
+    }
+    if (connection !== "email" && providerResult !== "success") {
+      this.observe("session.sign-in-refused");
+      return providerResult === "cancelled"
+        ? redirectWithError(res, request, "access_denied", `The user cancelled sign-in with ${connection}.`)
+        : redirectWithError(res, request, "server_error", `${connection} returned an error during sign-in.`);
+    }
+    const carry: Record<string, string> = { connection, provider_result: providerResult, mfa };
     const ref = (form.user || form.email || "").trim();
     if (!ref) {
       return sendHtml(res, 400, renderSignIn({ request: encoded, users: this.loginPageUsers(), requiredOrganization: request.orgCode ?? undefined, error: "Enter an email address or pick a seeded user." }));
@@ -205,6 +220,23 @@ export class AuthorizationServer {
         }),
       );
     }
+    if (mfa === "failed") {
+      this.observe("session.sign-in-refused");
+      return sendHtml(
+        res,
+        401,
+        renderSignIn({ request: encoded, users: this.loginPageUsers(), requiredOrganization: request.orgCode ?? undefined, error: "The verification code is not correct." }),
+      );
+    }
+    if (mfa === "cancelled") {
+      this.observe("session.sign-in-refused");
+      return redirectWithError(res, request, "access_denied", "The user cancelled multi-factor authentication.");
+    }
+    if (connection !== "email") this.observe("identity.social");
+    if (mfa === "passed") this.observe("identity.mfa");
+    // Kinde does not document its amr values for social and MFA sign-ins. The testkit uses the
+    // connection name and RFC 8176's "mfa".
+    const authMethods = [connection, ...(mfa === "passed" ? ["mfa"] : [])];
     const memberships = this.seed.memberships.filter((m) => m.userId === user.id);
     const wanted = request.orgCode ?? form.org ?? null;
     let organizationCode: string | null = null;
@@ -235,6 +267,7 @@ export class AuthorizationServer {
           organizations: memberships
             .map((m) => this.organization(m.organizationCode))
             .filter((org): org is KindeOrganization => org !== null),
+          carry,
         }),
       );
     }
@@ -257,6 +290,7 @@ export class AuthorizationServer {
       audience: request.audience,
       nonce: request.nonce,
       authTime: Math.floor(Date.now() / 1000),
+      authMethods,
       codeChallenge: request.codeChallenge,
       codeChallengeMethod: request.codeChallengeMethod,
       expiresAt: Date.now() + CODE_LIFETIME_MS,
@@ -597,6 +631,7 @@ export class AuthorizationServer {
         clientId: grant.clientId,
         audience: grant.audience.length > 0 ? grant.audience : undefined,
         authTime: grant.authTime,
+        authMethods: grant.authMethods,
         featureFlags: featureFlagsFor(this.seed, scenario.organization?.code ?? null),
       }),
       expires_in: this.testkit.accessTokenLifetime,
@@ -608,6 +643,7 @@ export class AuthorizationServer {
         clientId: grant.clientId,
         nonce: grant.nonce ?? undefined,
         authTime: grant.authTime,
+        authMethods: grant.authMethods,
       });
     }
     if (grant.scope.includes("offline")) {

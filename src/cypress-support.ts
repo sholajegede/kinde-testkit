@@ -5,11 +5,21 @@
  *
  * Runs in the browser, so it calls the testkit with cy.request and never imports Node code.
  */
-import { appLoginUrl, readSignInRequest, resolveLocation, signInFailure, signInForm, type RequestSignInOptions } from "./sign-in-flow.js";
+import {
+  appLoginUrl,
+  readSignInRequest,
+  resolveLocation,
+  signInFailure,
+  signInFails,
+  signInForm,
+  type RequestSignInOptions,
+  type SignInMethodOptions,
+} from "./sign-in-flow.js";
 import type { ActiveFailure, FailureRule } from "./failures.js";
 import type { SendWebhookOptions, WebhookDelivery } from "./webhooks.js";
+import type { Identity } from "./directory.js";
 
-export interface KindeSignInOptions {
+export interface KindeSignInOptions extends SignInMethodOptions {
   /** Active organization, for users in more than one. */
   org?: string;
   /** Your app's login route. Default /api/auth/login, as in Kinde's Next.js SDK. */
@@ -42,6 +52,8 @@ declare global {
     interface Chainable<Subject = any> {
       /** Signs a seeded user in through your app's login route, with requests instead of the sign-in page. */
       kindeSignIn(user: string, options?: KindeSignInOptions): Chainable<void>;
+      /** Signs in as a seeded user by email, or as an identity described inline with its organization, roles and permissions. */
+      kindeAuthenticateAs(identity: string | Identity, options?: Omit<KindeSignInOptions, "org">): Chainable<void>;
       /** Opens your app's logout route. */
       kindeSignOut(options?: KindeSignOutOptions): Chainable<void>;
       /** Mints an access token from the testkit. */
@@ -80,7 +92,7 @@ interface CyChain<T = unknown> {
 
 interface Cy {
   request<T = unknown>(options: CyRequestOptions): CyChain<CyResponse<T>>;
-  visit(url: string): CyChain;
+  visit(url: string, options?: { failOnStatusCode?: boolean }): CyChain;
   wrap<T>(value: T, options?: { log?: boolean }): CyChain<T>;
   url(): CyChain<string>;
 }
@@ -132,8 +144,9 @@ function control<T>(method: string, path: string, body?: unknown): CyChain<T> {
     }) as CyChain<T>;
 }
 
-Cypress.Commands.add("kindeSignIn", (user: string, options: KindeSignInOptions = {}) => {
-  const signIn: RequestSignInOptions = { user, org: options.org };
+function signIn(user: string, options: KindeSignInOptions = {}) {
+  const signIn: RequestSignInOptions = { user, org: options.org, connection: options.connection, providerResult: options.providerResult, mfa: options.mfa };
+  const failing = signInFails(signIn);
   const start = `${appBase()}${appLoginUrl(options.loginPath ?? "/api/auth/login", signIn)}`;
   Cypress.log({ name: "kindeSignIn", message: options.org ? `${user} in ${options.org}` : user });
   return cy
@@ -157,9 +170,21 @@ Cypress.Commands.add("kindeSignIn", (user: string, options: KindeSignInOptions =
       }),
     )
     .then((response) => {
+      // A wrong MFA code keeps the user on the sign-in page, so there is nothing for the app to receive.
+      if (failing && signIn.mfa === "failed" && response.status === 401) return undefined;
       if (response.status !== 302 && response.status !== 303) throw signInFailure(response.status, String(response.body), signIn);
-      return cy.visit(location(response, `${issuer()}/oauth2/auth/login`));
+      // A cancelled or failed sign-in returns to the app with an OAuth error, which the app may answer with an error status.
+      return cy.visit(location(response, `${issuer()}/oauth2/auth/login`), failing ? { failOnStatusCode: false } : undefined);
     });
+}
+
+Cypress.Commands.add("kindeSignIn", signIn);
+
+Cypress.Commands.add("kindeAuthenticateAs", (identity: string | Identity, options: Omit<KindeSignInOptions, "org"> = {}) => {
+  if (typeof identity === "string") return signIn(identity, options);
+  return control("POST", "/testkit/identities", identity).then(() =>
+    signIn(identity.email, { ...options, ...(identity.organization ? { org: identity.organization } : {}) }),
+  );
 });
 
 Cypress.Commands.add("kindeSignOut", (options: KindeSignOutOptions = {}) => {

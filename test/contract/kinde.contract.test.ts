@@ -36,7 +36,12 @@ function missingFields(real: Json, testkit: Json): string[] {
 async function json(url: string, init?: RequestInit): Promise<{ status: number; body: Json }> {
   const response = await fetch(url, init);
   const text = await response.text();
-  return { status: response.status, body: text ? (JSON.parse(text) as Json) : {} };
+  try {
+    return { status: response.status, body: text ? (JSON.parse(text) as Json) : {} };
+  } catch {
+    // Kinde answers some errors, such as an unknown client, with plain text.
+    return { status: response.status, body: { error_description: text.trim() } };
+  }
 }
 
 async function m2mToken(base: string, id: string, secret: string): Promise<string> {
@@ -46,9 +51,12 @@ async function m2mToken(base: string, id: string, secret: string): Promise<strin
     body: new URLSearchParams({ grant_type: "client_credentials", client_id: id, client_secret: secret, audience: `${base}/api` }),
   });
   if (status !== 200) {
-    const hint = String(body.error_description ?? "").includes("whitelisted")
+    const description = String(body.error_description ?? "");
+    const hint = description.includes("whitelisted")
       ? " In Kinde, open the M2M app, go to APIs, and authorize the Kinde Management API with the read scopes listed at the top of this file."
-      : "";
+      : description === "not_found" || body.error === "invalid_client"
+        ? " Kinde does not know this client ID and secret. Copy both from the M2M app's Details page in Kinde."
+        : "";
     throw new Error(`${base}/oauth2/token answered ${status}: ${JSON.stringify(body)}.${hint}`);
   }
   return body.access_token as string;

@@ -10,7 +10,7 @@ import { AuthorizationServer, OAuthError, type DeviceFlowOptions } from "./oauth
 import { AccountApi } from "./account.js";
 import { Directory } from "./directory.js";
 import { ManagementApi } from "./management.js";
-import { FailureInjector, failureBody, type FailureRule } from "./failures.js";
+import { FailureInjector, failureBody, malformedBody, type FailureRule } from "./failures.js";
 import {
   BILLING_EVENT_TYPES,
   WEBHOOK_EVENT_TYPES,
@@ -217,6 +217,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, context: Contex
       if (failure.delayMs > 0) coverage.hit("outage.slow");
       if (failure.hang) return;
       if (failure.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, failure.delayMs));
+      if (failure.malformed) {
+        coverage.hit("outage.malformed");
+        const { contentType, body } = malformedBody(failure.malformed);
+        res.writeHead(failure.status ?? 200, { "content-type": contentType, "cache-control": "no-store" });
+        res.end(body);
+        return;
+      }
       if (failure.status !== null) {
         const headers: Record<string, string> = {};
         if (failure.status === 429 || failure.status === 503) headers["retry-after"] = String(failure.retryAfter);
@@ -285,6 +292,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, context: Contex
   if (method === "DELETE" && pathname.startsWith("/testkit/webhooks/endpoints/")) {
     const removed = webhooks.removeEndpoint(decodeURIComponent(pathname.slice("/testkit/webhooks/endpoints/".length)));
     return sendJson(res, removed ? 200 : 404, { ok: removed });
+  }
+  if (method === "POST" && pathname === "/testkit/identities") {
+    const input = (await readJson(req)) as Record<string, unknown>;
+    if (typeof input.email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email)) {
+      throw new TestkitError("INVALID_REQUEST", "An identity needs an email address.");
+    }
+    const strings = (value: unknown) => (Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : undefined);
+    const { user, organization } = context.directory.ensureIdentity({
+      email: input.email,
+      givenName: typeof input.givenName === "string" ? input.givenName : null,
+      familyName: typeof input.familyName === "string" ? input.familyName : null,
+      organization: typeof input.organization === "string" ? input.organization : null,
+      organizationName: typeof input.organizationName === "string" ? input.organizationName : undefined,
+      roles: strings(input.roles),
+      permissions: strings(input.permissions),
+    });
+    return sendJson(res, 200, { user: { id: user.id, email: user.email }, organization: organization?.code ?? null });
   }
   if (method === "POST" && pathname === "/testkit/device") {
     const input = (await readJson(req)) as Record<string, unknown>;

@@ -1,6 +1,6 @@
 {
   "name": "kinde-testkit",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Test Kinde-authenticated apps offline: a local issuer with a real sign-in flow, Kinde-shaped tokens, reusable auth scenarios, and Vitest and Playwright helpers.",
   "license": "MIT",
   "author": "Shola Jegede <jegedeshola@gmail.com>",
@@ -20,7 +20,8 @@
     "oauth",
     "jest",
     "cypress",
-    "emulator"
+    "emulator",
+    "react-testing-library"
   ],
   "type": "module",
   "engines": {
@@ -71,6 +72,12 @@
         "default": "./dist/playwright.js"
       }
     },
+    "./react": {
+      "import": {
+        "types": "./dist/react.d.ts",
+        "default": "./dist/react.js"
+      }
+    },
     "./cypress": {
       "import": {
         "types": "./dist/cypress.d.ts",
@@ -90,7 +97,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsup && node test/check-exports.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -102,7 +109,10 @@
     "yaml": "^2.9.1"
   },
   "peerDependencies": {
+    "@kinde-oss/kinde-auth-react": ">=5",
+    "@kinde/js-utils": ">=0.30",
     "@playwright/test": ">=1.40",
+    "react": ">=18",
     "vitest": ">=2"
   },
   "peerDependenciesMeta": {
@@ -111,16 +121,33 @@
     },
     "@playwright/test": {
       "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "@kinde-oss/kinde-auth-react": {
+      "optional": true
+    },
+    "@kinde/js-utils": {
+      "optional": true
     }
   },
   "devDependencies": {
+    "@kinde-oss/kinde-auth-nextjs": "^2.13.2",
+    "@kinde-oss/kinde-auth-react": "^5.13.2",
     "@kinde/js-utils": "^0.32.2",
     "@kinde/jwt-validator": "^0.5.0",
     "@kinde/management-api-js": "^0.20.0",
     "@kinde/webhooks": "^1.3.3",
     "@playwright/test": "^1.65.1",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^22.10.0",
+    "@types/react": "^19.3.0",
     "jest": "^30.5.2",
+    "jsdom": "^26.1.0",
+    "next": "^16.4.6",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "tsup": "^8.3.5",
     "typescript": "^5.7.0",
     "vitest": "^5.1.0"

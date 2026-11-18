@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0
+
+- Add `kinde-testkit/react` for React Testing Library. `kindeAuth(scenario)` gives components that call `useKindeAuth()` from the React SDK or `useKindeBrowserClient()` from the Next.js SDK real tokens for the scenario, and records `login()`, `logout()` and `switchOrg()` calls.
+- Add `authenticateAs(identity)` to the Playwright fixture and `cy.kindeAuthenticateAs()` to Cypress. A test can sign in as a user described inline, with an organization, roles and permissions, without a seed entry. `POST /testkit/identities` does the same over HTTP.
+- Add `kinde.saveState(path)` to reuse a signed-in browser across tests and workers.
+- Add social sign-in and MFA to the sign-in page and the sign-in helpers: a social connection, a passed, failed or cancelled MFA step, and a cancelled or failed provider. Tokens record the method in `amr`.
+- Add `malformed` failure rules: invalid JSON, an empty body, an HTML error page or JSON in an unexpected shape. The CLI takes `kinde-testkit fail <path> --malformed <kind>`.
+- Coverage adds social sign-in, MFA sign-in, refused sign-ins and malformed answers.
+- The Next.js example adds tests for inline identities, saved sign-in state, social sign-in and MFA.
+- Fix: 0.6.1 and 0.7.0 were published without `dist/cypress-support.d.ts`, so TypeScript did not know the `cy.kinde*` commands. Parallel builds could delete it. The build now cleans once first, and fails if any file `package.json` exports is missing.
+
 ## 0.7.1
 
 - Management API responses now have every field a real Kinde business returns: `full_name` and `last_organization_sign_ins` on users, `created_on` on organizations in lists, and `is_organization_role_assignable` on permissions. Found by the contract tests.

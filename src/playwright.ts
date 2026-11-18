@@ -1,6 +1,10 @@
 import { test as base, expect, type Page } from "@playwright/test";
 import type { ActiveFailure, FailureRule } from "./failures.js";
 import type { SendWebhookOptions, WebhookDelivery } from "./webhooks.js";
+import type { Identity } from "./directory.js";
+import { signInFails, type SignInMethodOptions } from "./sign-in-flow.js";
+
+export type { Identity };
 
 export interface KindeFixtureOptions {
   issuer: string;
@@ -8,7 +12,7 @@ export interface KindeFixtureOptions {
   logoutPath: string;
 }
 
-export interface SignInOptions {
+export interface SignInOptions extends SignInMethodOptions {
   org?: string;
 }
 
@@ -16,6 +20,13 @@ export interface KindeFixture {
   readonly issuer: string;
   readonly currentUser: string | null;
   signInAs(user: string, options?: SignInOptions): Promise<void>;
+  /**
+   * Signs in as a seeded user by email, or as an identity described inline. An inline identity is
+   * created in the testkit with exactly these roles and permissions, so it needs no seed entry.
+   */
+  authenticateAs(identity: string | Identity): Promise<void>;
+  /** Saves the browser's cookies and storage, so other tests can start signed in with test.use({ storageState }). */
+  saveState(path: string): Promise<void>;
   switchOrganization(org: string): Promise<void>;
   signOut(): Promise<void>;
   injectFailure(rule: FailureRule): Promise<ActiveFailure>;
@@ -63,6 +74,28 @@ export function createKindeFixture(page: Page, options: KindeFixtureOptions): Ma
     }
 
     await page.getByLabel("Email").fill(user);
+    if (signIn.connection) await page.getByLabel("Sign in with").selectOption(signIn.connection);
+    if (signIn.providerResult) await page.getByLabel("Provider result").selectOption(signIn.providerResult);
+    if (signIn.mfa) await page.getByLabel("Multi-factor authentication").selectOption(signIn.mfa);
+
+    if (signInFails(signIn)) {
+      // The sign-in is meant to fail. A wrong MFA code stays on the sign-in page with an error. A cancelled
+      // or failed provider sends the app an OAuth error. What the app does next is up to the app (Kinde's
+      // Next.js SDK starts sign-in again), so this waits until the app has received the error.
+      if (signIn.mfa === "failed") {
+        await page.getByRole("button", { name: "Continue", exact: true }).click();
+        await page.getByText("The verification code is not correct.").waitFor();
+        return;
+      }
+      const errorReachedApp = page.waitForRequest((request) => {
+        const url = new URL(request.url());
+        return !onIssuer(url) && url.searchParams.has("error");
+      });
+      await page.getByRole("button", { name: "Continue", exact: true }).click();
+      await errorReachedApp;
+      await page.waitForLoadState();
+      return;
+    }
     await page.getByRole("button", { name: "Continue", exact: true }).click();
     await page.waitForURL((url) => !(onIssuer(url) && url.pathname === "/oauth2/auth"));
 
@@ -88,6 +121,14 @@ export function createKindeFixture(page: Page, options: KindeFixtureOptions): Ma
       return currentUser;
     },
     signInAs,
+    async authenticateAs(identity: string | Identity) {
+      if (typeof identity === "string") return signInAs(identity);
+      await control("/testkit/identities", { method: "POST", body: JSON.stringify(identity) });
+      await signInAs(identity.email, identity.organization ? { org: identity.organization } : {});
+    },
+    async saveState(path: string) {
+      await page.context().storageState({ path });
+    },
     async switchOrganization(org: string) {
       if (!currentUser) throw new Error("Call signInAs() before switchOrganization().");
       await signInAs(currentUser, { org });

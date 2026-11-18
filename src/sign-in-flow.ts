@@ -3,11 +3,31 @@
  * The Cypress commands use these. No Node APIs here, because Cypress bundles this file for the browser.
  */
 
-export interface RequestSignInOptions {
+/** What the social provider does when the user picks it on the sign-in page. */
+export type ProviderResult = "success" | "cancelled" | "error";
+/** What happens at the multi-factor authentication step. */
+export type MfaOutcome = "none" | "passed" | "failed" | "cancelled";
+
+/** How the user signs in on the testkit page. */
+export interface SignInMethodOptions {
+  /** "email" (the default), or a social provider such as "google", "github" or "microsoft". */
+  connection?: string;
+  /** For a social provider: "success" (the default), "cancelled" by the user, or a provider "error". */
+  providerResult?: ProviderResult;
+  /** Multi-factor authentication: "none" (the default), "passed", "failed" with a wrong code, or "cancelled". */
+  mfa?: MfaOutcome;
+}
+
+export interface RequestSignInOptions extends SignInMethodOptions {
   /** Email address or ID of the user. */
   user: string;
   /** Active organization, for users in more than one. */
   org?: string;
+}
+
+/** True when the options ask for a sign-in that does not reach the app with a session. */
+export function signInFails(options: SignInMethodOptions): boolean {
+  return options.mfa === "failed" || options.mfa === "cancelled" || options.providerResult === "cancelled" || options.providerResult === "error";
 }
 
 /** The app's login route, with the hints the testkit sign-in page reads. */
@@ -30,6 +50,9 @@ export function readSignInRequest(html: string): string {
 export function signInForm(request: string, options: RequestSignInOptions): Record<string, string> {
   const form: Record<string, string> = { request, email: options.user };
   if (options.org) form.org = options.org;
+  if (options.connection) form.connection = options.connection;
+  if (options.providerResult) form.provider_result = options.providerResult;
+  if (options.mfa) form.mfa = options.mfa;
   return form;
 }
 

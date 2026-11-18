@@ -95,6 +95,10 @@ beforeAll(async () => {
       res.writeHead(307, { location: target.toString() }).end();
       return;
     }
+    if (url.pathname === "/api/auth/kinde_callback" && url.searchParams.has("error")) {
+      res.writeHead(400).end(`sign-in failed: ${url.searchParams.get("error")}`);
+      return;
+    }
     if (url.pathname === "/api/auth/kinde_callback") {
       const tokens = await fetch(`${testkit.url}/oauth2/token`, {
         method: "POST",
@@ -126,7 +130,7 @@ beforeEach(() => {
 describe("kinde-testkit/cypress/support", () => {
   it("registers the commands", () => {
     expect([...commands.keys()].sort()).toEqual(
-      ["kindeClearFailures", "kindeInjectFailure", "kindeReset", "kindeSendWebhook", "kindeSignIn", "kindeSignOut", "kindeToken"].sort(),
+      ["kindeAuthenticateAs", "kindeClearFailures", "kindeInjectFailure", "kindeReset", "kindeSendWebhook", "kindeSignIn", "kindeSignOut", "kindeToken"].sort(),
     );
   });
 
@@ -140,6 +144,21 @@ describe("kinde-testkit/cypress/support", () => {
     await run("kindeSignIn", "consultant@example.test", { org: "org_globex" });
     expect(sessions).toEqual(["kp_consultant@org_globex"]);
     await expect(run("kindeSignIn", "consultant@example.test")).rejects.toThrow("belongs to more than one organization");
+  });
+
+  it("signs in as an inline identity that is not in the seed", async () => {
+    await run("kindeAuthenticateAs", { email: "auditor@example.test", organization: "org_acme", permissions: ["projects:read"] });
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatch(/^kp_[0-9a-f]+@org_acme$/);
+  });
+
+  it("signs in with a social connection and MFA, and lets failing outcomes through", async () => {
+    await run("kindeSignIn", "admin@example.test", { connection: "google", mfa: "passed" });
+    expect(sessions).toEqual(["kp_admin@org_acme"]);
+    await run("kindeSignIn", "admin@example.test", { mfa: "failed" });
+    await run("kindeSignIn", "admin@example.test", { connection: "github", providerResult: "cancelled" });
+    expect(sessions).toHaveLength(1);
+    expect(new URL(visited.at(-1)!).searchParams.get("error")).toBe("access_denied");
   });
 
   it("explains a refused sign-in", async () => {

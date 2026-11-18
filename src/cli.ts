@@ -92,6 +92,7 @@ fail <path>             An exact path such as /oauth2/token, or a prefix such as
   --status <code>       Answer with this status, such as 429, 500 or 503
   --delay <ms>          Wait before answering
   --hang                Never answer
+  --malformed <kind>    Answer with a broken body: invalid-json, empty, html or unexpected-json
   --times <n>           Apply to the next n requests only
   --method <verb>       Only match this method
   --list                Show active rules
@@ -386,6 +387,7 @@ async function fail(args: string[]): Promise<void> {
       status: { type: "string" },
       delay: { type: "string" },
       hang: { type: "boolean" },
+      malformed: { type: "string" },
       times: { type: "string" },
       method: { type: "string" },
       list: { type: "boolean" },
@@ -419,6 +421,7 @@ async function fail(args: string[]): Promise<void> {
       status: values.status !== undefined ? Number(values.status) : undefined,
       delayMs: values.delay !== undefined ? Number(values.delay) : undefined,
       hang: values.hang,
+      malformed: values.malformed,
       times: values.times !== undefined ? Number(values.times) : undefined,
     }),
   })) as Record<string, unknown>;
@@ -597,6 +600,7 @@ function describeRule(rule: Record<string, unknown>): string {
   if (rule.status !== null) parts.push(`answers ${String(rule.status)}`);
   if (rule.delayMs) parts.push(`after ${String(rule.delayMs)}ms`);
   if (rule.hang) parts.push("never answers");
+  if (rule.malformed) parts.push(`sends a malformed body (${String(rule.malformed)})`);
   parts.push(rule.remaining === null ? "until removed" : `for the next ${String(rule.remaining)} requests`);
   return parts.join(", ");
 }

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { createKindeOrganization, createKindeUser, createMembership } from "./factories.js";
 import { slug } from "./ids.js";
-import { permissionRecord, roleRecord, type ResolvedSeed, type SeedPermission, type SeedRole } from "./seed.js";
+import { findUser, permissionRecord, roleRecord, type ResolvedSeed, type SeedPermission, type SeedRole } from "./seed.js";
 import type { KindeMembership, KindeOrganization, KindeUser } from "./types.js";
 
 export interface UserMeta {
@@ -13,6 +13,18 @@ export interface UserMeta {
   lastSignedIn: string | null;
   /** Last sign-in time per organization code. */
   lastOrganizationSignIns: Record<string, string>;
+}
+
+/** An identity for authenticateAs(). */
+export interface Identity {
+  email: string;
+  givenName?: string | null;
+  familyName?: string | null;
+  /** The organization code. Created when it does not exist. */
+  organization?: string | null;
+  organizationName?: string;
+  roles?: string[];
+  permissions?: string[];
 }
 
 export interface OrganizationMeta {
@@ -163,6 +175,35 @@ export class Directory {
     for (const key of roles) this.ensureRole(key);
     for (const key of permissions) this.ensurePermission(key);
     return membership;
+  }
+
+  /**
+   * Makes sure a user exists with exactly these roles and permissions in the organization, creating
+   * the user, organization and membership when they are missing. Used by authenticateAs() in browser
+   * tests, so a test can sign in as any identity without adding it to the seed. reset() removes it.
+   */
+  ensureIdentity(input: Identity): { user: KindeUser; organization: KindeOrganization | null } {
+    const email = input.email.trim().toLowerCase();
+    let user = findUser(this.seed.users, email);
+    if (!user) {
+      user = createKindeUser({ email, givenName: input.givenName ?? null, familyName: input.familyName ?? null });
+      this.seed.users.push(user);
+    }
+    if (!input.organization) return { user, organization: null };
+    let organization = this.organization(input.organization);
+    if (!organization) {
+      organization = createKindeOrganization({ code: input.organization, name: input.organizationName ?? input.organization });
+      this.seed.organizations.push(organization);
+    }
+    const roles = input.roles ?? [];
+    const permissions = input.permissions ?? [];
+    const index = this.seed.memberships.findIndex((m) => m.userId === user.id && m.organizationCode === organization.code);
+    const membership = createMembership({ userId: user.id, organizationCode: organization.code, roles, permissions });
+    if (index >= 0) this.seed.memberships[index] = membership;
+    else this.seed.memberships.push(membership);
+    for (const key of roles) this.ensureRole(key);
+    for (const key of permissions) this.ensurePermission(key);
+    return { user, organization };
   }
 
   removeMembership(userId: string, organizationCode: string): boolean {

@@ -8,7 +8,12 @@ export interface FailureRule {
   hang?: boolean;
   times?: number;
   retryAfter?: number;
+  /** Answer with a body your client cannot use. The status is 200 unless you set one. */
+  malformed?: MalformedKind;
 }
+
+export type MalformedKind = "invalid-json" | "empty" | "html" | "unexpected-json";
+export const MALFORMED_KINDS: readonly MalformedKind[] = ["invalid-json", "empty", "html", "unexpected-json"];
 
 export interface ActiveFailure {
   id: string;
@@ -19,6 +24,7 @@ export interface ActiveFailure {
   hang: boolean;
   remaining: number | null;
   retryAfter: number;
+  malformed: MalformedKind | null;
   hits: number;
 }
 
@@ -42,6 +48,7 @@ export class FailureInjector {
       hang: rule.hang ?? false,
       remaining: rule.times ?? null,
       retryAfter: rule.retryAfter ?? 1,
+      malformed: rule.malformed ?? null,
       hits: 0,
     };
     this.rules.push(active);
@@ -80,6 +87,20 @@ export function failureBody(status: number): { error: string; error_description:
   return { error, error_description: `kinde-testkit injected a ${status} response.` };
 }
 
+/** The body and content type for a malformed response. */
+export function malformedBody(kind: MalformedKind): { contentType: string; body: string } {
+  switch (kind) {
+    case "invalid-json":
+      return { contentType: "application/json", body: '{"access_token":"eyJhbGciOiJSUzI1NiJ9.' };
+    case "empty":
+      return { contentType: "application/json", body: "" };
+    case "html":
+      return { contentType: "text/html; charset=utf-8", body: "<!doctype html><html><body><h1>Bad gateway</h1></body></html>" };
+    case "unexpected-json":
+      return { contentType: "application/json", body: JSON.stringify({ message: "kinde-testkit sent a JSON body in a shape your client does not expect." }) };
+  }
+}
+
 function matches(rule: ActiveFailure, method: string, path: string): boolean {
   if (rule.method && rule.method !== method.toUpperCase()) return false;
   if (rule.path.endsWith("*")) return path.startsWith(rule.path.slice(0, -1));
@@ -93,8 +114,12 @@ function validate(rule: FailureRule): string[] {
   } else if (rule.path.startsWith("/testkit/")) {
     problems.push("Failures cannot target /testkit/ control endpoints.");
   }
-  if (rule.status !== undefined && (!Number.isInteger(rule.status) || rule.status < 400 || rule.status > 599)) {
-    problems.push('"status" must be an HTTP error status between 400 and 599.');
+  if (rule.malformed !== undefined && !MALFORMED_KINDS.includes(rule.malformed)) {
+    problems.push(`"malformed" must be one of ${MALFORMED_KINDS.join(", ")}.`);
+  }
+  const lowest = rule.malformed ? 200 : 400;
+  if (rule.status !== undefined && (!Number.isInteger(rule.status) || rule.status < lowest || rule.status > 599)) {
+    problems.push(rule.malformed ? '"status" must be between 200 and 599.' : '"status" must be an HTTP error status between 400 and 599.');
   }
   if (rule.delayMs !== undefined && (!Number.isFinite(rule.delayMs) || rule.delayMs < 0 || rule.delayMs > MAX_DELAY_MS)) {
     problems.push(`"delayMs" must be between 0 and ${MAX_DELAY_MS}.`);
@@ -105,8 +130,8 @@ function validate(rule: FailureRule): string[] {
   if (rule.retryAfter !== undefined && (!Number.isInteger(rule.retryAfter) || rule.retryAfter < 0)) {
     problems.push('"retryAfter" must be a whole number of seconds.');
   }
-  if (rule.status === undefined && !rule.delayMs && !rule.hang) {
-    problems.push('Set at least one of "status", "delayMs" or "hang".');
+  if (rule.status === undefined && !rule.delayMs && !rule.hang && !rule.malformed) {
+    problems.push('Set at least one of "status", "delayMs", "hang" or "malformed".');
   }
   return problems;
 }

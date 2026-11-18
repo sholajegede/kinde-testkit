@@ -35,7 +35,7 @@ describe("dashboard", () => {
     expect(html).toContain("admin@example.test");
     expect(html).toContain("Acme Inc.");
     expect(html).toContain('<span class="chip">projects:delete</span>');
-    expect(html).toContain("Coverage: 0/47");
+    expect(html).toContain("Coverage: 0/51");
   });
 
   it("lists issued tokens with their claims", async () => {

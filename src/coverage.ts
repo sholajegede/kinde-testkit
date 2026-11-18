@@ -23,6 +23,8 @@ export const COVERAGE_GROUPS: CoverageGroup[] = [
       { id: "identity.unseeded", label: "User not in the seed", hint: "Sign in with an email that is not seeded." },
       { id: "identity.id-token", label: "ID token", hint: "Sign in through the sign-in page so the app gets an ID token." },
       { id: "identity.suspended", label: "Suspended user refused", hint: "Suspend a user with the Management API, then sign them in." },
+      { id: "identity.social", label: "Social sign-in", hint: "Sign in with a social connection, such as signInAs(email, { connection: \"google\" })." },
+      { id: "identity.mfa", label: "Multi-factor sign-in", hint: "Sign in with { mfa: \"passed\" }." },
     ],
   },
   {
@@ -59,6 +61,7 @@ export const COVERAGE_GROUPS: CoverageGroup[] = [
       { id: "session.sign-out", label: "Sign-out", hint: "Sign out through your app's logout route." },
       { id: "session.revoke", label: "Refresh token revoked", hint: "Call /oauth2/revoke, as some SDKs do on sign-out." },
       { id: "session.silent", label: "Silent sign-in with no session", hint: "Send prompt=none and handle login_required." },
+      { id: "session.sign-in-refused", label: "Sign-in cancelled or failed", hint: "Sign in with { providerResult: \"cancelled\" } or { mfa: \"failed\" } and check the app's error handling." },
       { id: "session.device-approved", label: "Device sign-in", hint: "Run the device authorization flow and approve it with POST /testkit/device." },
     ],
   },
@@ -97,6 +100,7 @@ export const COVERAGE_GROUPS: CoverageGroup[] = [
       { id: "outage.rate-limit", label: "Rate limit", hint: "Inject a 429." },
       { id: "outage.slow", label: "Slow answer", hint: "Inject a delay." },
       { id: "outage.timeout", label: "No answer", hint: "Inject a hang so the client hits its timeout." },
+      { id: "outage.malformed", label: "Malformed answer", hint: "Inject a malformed response, such as invalid JSON from the token endpoint." },
     ],
   },
 ];

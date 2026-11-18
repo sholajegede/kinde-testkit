@@ -7,6 +7,7 @@ const node = {
   jest: "src/jest.ts",
   playwright: "src/playwright.ts",
   cypress: "src/cypress.ts",
+  react: "src/react.ts",
   cli: "src/cli.ts",
 };
 
@@ -14,12 +15,11 @@ export default defineConfig([
   {
     entry: node,
     format: ["esm"],
-    dts: { entry: { index: node.index, vitest: node.vitest, jest: node.jest, playwright: node.playwright, cypress: node.cypress } },
-    clean: true,
+    dts: { entry: { index: node.index, vitest: node.vitest, jest: node.jest, playwright: node.playwright, cypress: node.cypress, react: node.react } },
     target: "node20",
     sourcemap: true,
     splitting: true,
-    external: ["vitest", "@playwright/test", "cypress"],
+    external: ["vitest", "@playwright/test", "cypress", "react", "@kinde-oss/kinde-auth-react", "@kinde/js-utils"],
   },
   // jose ships as ESM only. CommonJS builds bundle it, so require() works in Jest and older tooling.
   {

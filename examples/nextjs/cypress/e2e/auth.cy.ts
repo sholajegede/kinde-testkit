@@ -50,4 +50,17 @@ describe("sign-in with kinde-testkit", () => {
     cy.visit("/");
     cy.get('[data-testid="signed-in-as"]').should("have.text", "Signed in as admin@example.test");
   });
+
+  it("signs in as an inline identity with the permissions the test gives it", () => {
+    cy.kindeAuthenticateAs({ email: "auditor@example.test", organization: "org_acme", permissions: ["projects:read", "projects:delete"] });
+    cy.visit("/projects");
+    cy.contains("button", "Delete Customer portal").should("be.visible");
+  });
+
+  it("a cancelled Google sign-in leaves the user signed out", () => {
+    cy.visit("/");
+    cy.kindeSignIn("admin@example.test", { connection: "google", providerResult: "cancelled" });
+    cy.visit("/");
+    cy.contains("You are signed out.").should("be.visible");
+  });
 });
