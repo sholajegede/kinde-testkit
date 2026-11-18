@@ -1,4 +1,5 @@
 import { test as base, expect, type Page } from "@playwright/test";
+import type { ActiveFailure, FailureRule } from "./failures.js";
 
 export interface KindeFixtureOptions {
   issuer: string;
@@ -16,6 +17,12 @@ export interface KindeFixture {
   signInAs(user: string, options?: SignInOptions): Promise<void>;
   switchOrganization(org: string): Promise<void>;
   signOut(): Promise<void>;
+  injectFailure(rule: FailureRule): Promise<ActiveFailure>;
+  clearFailures(): Promise<void>;
+}
+
+interface ManagedKindeFixture extends KindeFixture {
+  dispose(): Promise<void>;
 }
 
 export interface KindeTestOptions {
@@ -24,10 +31,23 @@ export interface KindeTestOptions {
   kindeLogoutPath: string;
 }
 
-export function createKindeFixture(page: Page, options: KindeFixtureOptions): KindeFixture {
+export function createKindeFixture(page: Page, options: KindeFixtureOptions): ManagedKindeFixture {
   const issuer = new URL(options.issuer);
   const onIssuer = (url: URL) => url.origin === issuer.origin;
   let currentUser: string | null = null;
+  const injected = new Set<string>();
+
+  async function control(path: string, init: RequestInit = {}): Promise<Response> {
+    const response = await fetch(`${issuer.origin}${path}`, {
+      ...init,
+      headers: { "content-type": "application/json", ...(init.headers ?? {}) },
+    });
+    if (!response.ok && response.status !== 404) {
+      const body = (await response.json().catch(() => ({}))) as { error_description?: string };
+      throw new Error(body.error_description ?? `kinde-testkit answered ${response.status} for ${path}.`);
+    }
+    return response;
+  }
 
   async function signInAs(user: string, signIn: SignInOptions = {}): Promise<void> {
     const params = new URLSearchParams({ login_hint: user });
@@ -74,6 +94,19 @@ export function createKindeFixture(page: Page, options: KindeFixtureOptions): Ki
       await page.goto(options.logoutPath);
       currentUser = null;
     },
+    async injectFailure(rule: FailureRule) {
+      const response = await control("/testkit/failures", { method: "POST", body: JSON.stringify(rule) });
+      const failure = (await response.json()) as ActiveFailure;
+      injected.add(failure.id);
+      return failure;
+    },
+    async clearFailures() {
+      await Promise.all([...injected].map((id) => control(`/testkit/failures/${id}`, { method: "DELETE" })));
+      injected.clear();
+    },
+    async dispose() {
+      if (injected.size > 0) await this.clearFailures();
+    },
   };
 }
 
@@ -82,13 +115,13 @@ export const test = base.extend<KindeTestOptions & { kinde: KindeFixture }>({
   kindeLoginPath: ["/api/auth/login", { option: true }],
   kindeLogoutPath: ["/api/auth/logout", { option: true }],
   kinde: async ({ page, kindeIssuer, kindeLoginPath, kindeLogoutPath }, use) => {
-    await use(
-      createKindeFixture(page, {
-        issuer: kindeIssuer,
-        loginPath: kindeLoginPath,
-        logoutPath: kindeLogoutPath,
-      }),
-    );
+    const fixture = createKindeFixture(page, {
+      issuer: kindeIssuer,
+      loginPath: kindeLoginPath,
+      logoutPath: kindeLogoutPath,
+    });
+    await use(fixture);
+    await fixture.dispose();
   },
 });
 

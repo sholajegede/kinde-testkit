@@ -4,6 +4,7 @@ import { TestkitError } from "./errors.js";
 import { INVALID_TOKEN_KINDS, KindeTestkit } from "./testkit.js";
 import { resolveSeed, seedScenario, type ResolvedSeed, type TestkitSeed } from "./seed.js";
 import { AuthorizationServer } from "./oauth.js";
+import { FailureInjector, failureBody, type FailureRule } from "./failures.js";
 import type { Duration, InvalidTokenKind, KindeTokenOptions } from "./types.js";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -27,6 +28,8 @@ export interface RunningKindeTestkit {
   jwksUri: string;
   testkit: KindeTestkit;
   seed: ResolvedSeed;
+  failures: FailureInjector;
+  reset(): void;
   close(): Promise<void>;
 }
 
@@ -42,14 +45,13 @@ export async function startKindeTestkit(
   }
   const seed = resolveSeed(options.seed ?? {});
 
-  let ready!: (value: { testkit: KindeTestkit; auth: AuthorizationServer }) => void;
-  const testkitReady = new Promise<{ testkit: KindeTestkit; auth: AuthorizationServer }>(
-    (resolve) => (ready = resolve),
-  );
+  const failures = new FailureInjector();
+  let ready!: (value: Context) => void;
+  const testkitReady = new Promise<Context>((resolve) => (ready = resolve));
 
   const server = createServer((req, res) => {
     testkitReady
-      .then(({ testkit, auth }) => handle(req, res, testkit, auth, seed))
+      .then((context) => handle(req, res, context))
       .catch((error: unknown) => sendError(res, error));
   });
 
@@ -66,7 +68,12 @@ export async function startKindeTestkit(
     audience: options.audience ?? options.seed?.audience,
     clientId: options.clientId ?? options.seed?.clientId,
   });
-  ready({ testkit, auth: new AuthorizationServer(testkit, seed) });
+  const auth = new AuthorizationServer(testkit, seed);
+  const reset = () => {
+    auth.reset();
+    failures.clear();
+  };
+  ready({ testkit, auth, seed, failures, reset });
 
   return {
     url,
@@ -75,6 +82,8 @@ export async function startKindeTestkit(
     jwksUri: `${url}/.well-known/jwks`,
     testkit,
     seed,
+    failures,
+    reset,
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.closeAllConnections();
@@ -83,16 +92,32 @@ export async function startKindeTestkit(
   };
 }
 
-async function handle(
-  req: IncomingMessage,
-  res: ServerResponse,
-  testkit: KindeTestkit,
-  auth: AuthorizationServer,
-  seed: ResolvedSeed,
-): Promise<void> {
+interface Context {
+  testkit: KindeTestkit;
+  auth: AuthorizationServer;
+  seed: ResolvedSeed;
+  failures: FailureInjector;
+  reset(): void;
+}
+
+async function handle(req: IncomingMessage, res: ServerResponse, context: Context): Promise<void> {
+  const { testkit, auth, seed, failures } = context;
   const url = new URL(req.url ?? "/", "http://localhost");
   const { pathname } = url;
   const method = req.method ?? "GET";
+
+  if (!pathname.startsWith("/testkit/")) {
+    const failure = failures.take(method, pathname);
+    if (failure) {
+      if (failure.hang) return;
+      if (failure.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, failure.delayMs));
+      if (failure.status !== null) {
+        const headers: Record<string, string> = {};
+        if (failure.status === 429 || failure.status === 503) headers["retry-after"] = String(failure.retryAfter);
+        return sendJson(res, failure.status, failureBody(failure.status), headers);
+      }
+    }
+  }
 
   if (await auth.handle(req, res, url, () => readForm(req))) return;
 
@@ -111,6 +136,22 @@ async function handle(
   }
   if (method === "GET" && pathname === "/testkit/memberships") {
     return sendJson(res, 200, seed.memberships);
+  }
+  if (method === "GET" && pathname === "/testkit/failures") return sendJson(res, 200, failures.list());
+  if (method === "POST" && pathname === "/testkit/failures") {
+    return sendJson(res, 201, failures.add((await readJson(req)) as FailureRule));
+  }
+  if (method === "DELETE" && pathname === "/testkit/failures") {
+    failures.clear();
+    return sendJson(res, 200, { ok: true });
+  }
+  if (method === "DELETE" && pathname.startsWith("/testkit/failures/")) {
+    const removed = failures.remove(decodeURIComponent(pathname.slice("/testkit/failures/".length)));
+    return sendJson(res, removed ? 200 : 404, { ok: removed });
+  }
+  if (method === "POST" && pathname === "/testkit/reset") {
+    context.reset();
+    return sendJson(res, 200, { ok: true });
   }
   if (method === "POST" && pathname === "/testkit/token") {
     const body = await readJson(req);
@@ -153,6 +194,21 @@ async function issueToken(testkit: KindeTestkit, seed: ResolvedSeed, body: unkno
     ]);
   }
   const expiresIn = input.expiresIn as Duration | undefined;
+  if (input.m2m === true) {
+    const clientId = optionalString(input, "clientId");
+    const app = clientId ? seed.applications.find((a) => a.clientId === clientId) : undefined;
+    const scopes = optionalStrings(input, "scopes") ?? [];
+    return testkit.m2mToken({
+      clientId,
+      organizationCode: optionalString(input, "organizationCode") ?? optionalString(input, "organization") ?? app?.organizationCode ?? null,
+      scopes,
+      grantedScopes: app?.scopes ? scopes.filter((scope) => app.scopes!.includes(scope)) : scopes,
+      audience: optionalStrings(input, "audience") ?? app?.audience ?? undefined,
+      permissions: optionalStrings(input, "permissions") ?? app?.permissions ?? undefined,
+      expiresIn,
+      invalid,
+    });
+  }
   const permissions = optionalStrings(input, "permissions");
   const roles = optionalStrings(input, "roles");
   const userRef = optionalString(input, "user");
@@ -236,10 +292,11 @@ async function readText(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8").trim();
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    ...headers,
   });
   res.end(JSON.stringify(body));
 }
