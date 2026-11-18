@@ -1,6 +1,6 @@
 {
   "name": "kinde-testkit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Test Kinde-authenticated apps offline: a local issuer with a real sign-in flow, Kinde-shaped tokens, reusable auth scenarios, and Vitest and Playwright helpers.",
   "license": "MIT",
   "author": "Shola Jegede <jegedeshola@gmail.com>",
@@ -84,6 +84,7 @@
   },
   "devDependencies": {
     "@kinde/jwt-validator": "^0.5.0",
+    "@kinde/webhooks": "^1.3.3",
     "@playwright/test": "^1.65.1",
     "@types/node": "^22.10.0",
     "tsup": "^8.3.5",

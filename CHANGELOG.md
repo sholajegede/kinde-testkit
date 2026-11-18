@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- Add signed webhooks in Kinde's format: a JWT body with `Content-Type: application/jwt` and a `webhook-id` header, decodable with `@kinde/webhooks`.
+- Build payloads for the 16 event types `@kinde/webhooks` defines from seeded users, organizations, roles and permissions. Send billing events, and any other type, with your own `data`.
+- Deliver to endpoints from the seed's `webhooks`, `start --webhook`, `addEndpoint()` or a `to` URL, with event filters, Kinde's rule that only a 200 counts as delivered, fast retries with the same `webhook-id`, timeouts, and a delivery log.
+- Test the hard cases with `duplicate`, and with `invalid` set to `bad-signature`, `unknown-key`, `unsigned` or `stale`.
+- Signing in on the testkit page sends `user.authenticated`, and a first sign-in with an unseeded email sends `user.created`.
+- Add `kinde-testkit webhook`, `kinde.webhooks` in Vitest, `kinde.sendWebhook()` in Playwright, and `/testkit/webhooks` endpoints.
+- The Next.js example adds a webhook route with tests for valid, duplicated, forged and stale events.
+
 ## 0.3.0
 
 - Add the `client_credentials` grant with Kinde's machine-to-machine token shape (`gty`, `scope`, `scp`, `v`, no `sub`), seeded `applications` with secrets, scopes, permissions, audiences and organizations, `testkit.m2mToken()`, and `kinde-testkit token --m2m`.

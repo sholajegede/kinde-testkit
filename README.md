@@ -9,7 +9,7 @@ There are two ways to use it:
 - **API and unit tests:** mint a token for any user, organization and permission set, including expired, tampered and unsigned tokens, and send it to your API.
 - **Browser tests:** point your app at the testkit, and Playwright signs in as any seeded user through your app's own login route.
 
-It also issues machine-to-machine tokens, makes Kinde's endpoints fail or slow down on demand, and has a `doctor` command that checks your app's Kinde settings before a test run.
+It also issues machine-to-machine tokens, sends signed webhooks, makes Kinde's endpoints fail or slow down on demand, and has a `doctor` command that checks your app's Kinde settings before a test run.
 
 ## Why it exists
 
@@ -147,6 +147,7 @@ test("a consultant switches organization", async ({ page, kinde }) => {
 | `kinde.signOut()` | Opens your app's logout route |
 | `kinde.injectFailure(rule)` | Makes a testkit endpoint fail, slow down or hang. Removed when the test ends |
 | `kinde.clearFailures()` | Removes the failures this test added |
+| `kinde.sendWebhook(event)` | Sends a signed webhook and returns the delivery results |
 
 The fixture uses `/api/auth/login` and `/api/auth/logout`, the Next.js SDK's routes. Set `kindeLoginPath` and `kindeLogoutPath` in `use` when your app's routes are different. Each test gets its own browser context, so tests run in parallel without sharing sessions.
 
@@ -185,6 +186,57 @@ curl -s -X POST http://localhost:4400/oauth2/token \
 ```
 
 In tests, mint one directly with `testkit.m2mToken({ clientId, organizationCode, scopes, audience })`, or run `kinde-testkit token --m2m --client-id acme_agent --scope read:users`. M2M tokens take the same `invalid` kinds as user tokens. `principalFromClaims()` reads them as `{ type: "machine", subject: <client ID> }`.
+
+## Webhooks
+
+Kinde sends webhooks as a signed JWT with `Content-Type: application/jwt` and a `webhook-id` header that stays the same across retries. Your endpoint checks the signature with `decodeWebhook()` from `@kinde/webhooks`, which fetches keys from your issuer. kinde-testkit sends webhooks the same way, signed with its own key, so the same handler code works in tests when `KINDE_ISSUER_URL` points at the testkit.
+
+Add the endpoints that should receive events to the seed file, or pass `--webhook <url>` to `start`:
+
+```json
+{
+  "webhooks": [
+    { "url": "http://localhost:3000/api/webhooks/kinde" },
+    { "url": "http://localhost:3000/api/webhooks/billing", "events": ["customer.payment_succeeded"] }
+  ]
+}
+```
+
+Then send events from a test or the command line:
+
+```ts
+// Vitest
+const [delivery] = await kinde.webhooks.send({ type: "user.created", user: "admin@example.test" });
+expect(delivery.delivered).toBe(true);
+
+// Playwright
+await kinde.sendWebhook({ type: "organization.created", organization: "org_acme", duplicate: 3 });
+```
+
+```bash
+kinde-testkit webhook user.created --user admin@example.test
+kinde-testkit webhook customer.payment_succeeded --data '{"customer_id":"customer_123"}'
+kinde-testkit webhook --deliveries
+```
+
+kinde-testkit builds the payload for the 16 event types that `@kinde/webhooks` defines, such as `user.created`, `organization.updated`, `role.deleted` and `access_request.created`, from your seeded users, organizations, roles and permissions. Kinde does not publish payload shapes for its billing events, such as `customer.plan_assigned`, so for those you pass the `data` object yourself. `kinde-testkit webhook --types` lists both groups.
+
+With an endpoint configured, signing in on the testkit page sends `user.authenticated`, and the first sign-in with an email that is not seeded also sends `user.created`, as Kinde does.
+
+Delivery follows Kinde's rules. Only a `200` counts as delivered. Anything else, or no answer, is retried with the same `webhook-id`. Kinde retries over 36 hours; the testkit retries after 0, 100 and 500 milliseconds by default, so tests stay fast. Change that with `startKindeTestkit({ webhooks: { retryDelaysMs, timeoutMs } })`.
+
+These options test the hard parts of a webhook handler:
+
+| Option | What it tests |
+| --- | --- |
+| `duplicate: n` | n copies with the same `webhook-id` and `event_id`. Your handler should process the event once |
+| `invalid: "bad-signature"` | A tampered signature. `decodeWebhook()` returns `null` |
+| `invalid: "unknown-key"` | Signed by a key your issuer never published |
+| `invalid: "unsigned"` | `alg: none` |
+| `invalid: "stale"` | A valid signature on an hour-old `timestamp`, for replay checks |
+| `to: url` | Send to one URL instead of the configured endpoints |
+
+`kinde.webhooks.deliveries()`, `kinde-testkit webhook --deliveries` and `GET /testkit/webhooks/deliveries` show every attempt with its status code or error. [`examples/nextjs`](examples/nextjs) has a webhook route and Playwright tests for valid, duplicated, forged and stale events.
 
 ## Testing outages
 
@@ -310,6 +362,9 @@ When `kinde-testkit.json` exists in the current folder, `start` loads it. Pass `
   ],
   "applications": [
     { "clientId": "acme_agent", "organization": "org_acme", "scopes": ["read:users"] }
+  ],
+  "webhooks": [
+    { "url": "http://localhost:3000/api/webhooks/kinde" }
   ]
 }
 ```
@@ -320,7 +375,7 @@ A token for a seeded user takes its roles and permissions from the membership in
 
 | Command | What it does |
 | --- | --- |
-| `kinde-testkit start` | Start the issuer. Options: `--port`, `--host`, `--issuer`, `--audience`, `--client-id`, `--seed`, `--allow-public`, `--json` |
+| `kinde-testkit start` | Start the issuer. Options: `--port`, `--host`, `--issuer`, `--audience`, `--client-id`, `--seed`, `--webhook`, `--allow-public`, `--json` |
 | `kinde-testkit token` | Print a signed access token. Options: `--user`, `--org`, `--sub`, `--permissions`, `--roles`, `--expires-in`, `--invalid`, `--url`, `--json` |
 | `kinde-testkit users` | List seeded users |
 | `kinde-testkit organizations` | List seeded organizations |
@@ -328,7 +383,8 @@ A token for a seeded user takes its roles and permissions from the membership in
 | `kinde-testkit inspect [token]` | Decode a token and check it. Reads stdin when no token is given. Options: `--url`, `--json` |
 | `kinde-testkit doctor` | Check your app's Kinde settings against the issuer. Options: `--url`, `--env-file`, `--json` |
 | `kinde-testkit fail <path>` | Add a failure rule. Options: `--status`, `--delay`, `--hang`, `--times`, `--method`, `--list`, `--clear` |
-| `kinde-testkit reset` | Clear sign-in sessions and failure rules |
+| `kinde-testkit reset` | Clear sign-in sessions, failure rules, webhook deliveries and endpoints added at runtime |
+| `kinde-testkit webhook <type>` | Send a signed webhook. Options: `--user`, `--org`, `--role`, `--permission`, `--data`, `--to`, `--duplicate`, `--invalid`, `--types`, `--deliveries` |
 
 Every command takes `--json` for CI scripts and coding agents.
 
@@ -368,13 +424,13 @@ import {
 
 - `scenario()` builds a caller: `.user()`, `.organization()`, `.withoutOrganization()`, `.role()`, `.permissions()`, `.claims()`, then `.authenticated()` or `.unauthenticated()`. The result is plain JSON, so you can keep scenarios in a shared file and import them anywhere.
 - `createKindeUser()` gives a user a stable id derived from the email, so the same email always maps to the same `kp_` id. `createKindeOrganization()` and `createMembership()` cover organizations and per-organization roles.
-- `KindeTestkit.create({ issuer, audience, clientId, accessTokenExpiresIn, idTokenExpiresIn })` holds a signing key. Access tokens last 24 hours and ID tokens 1 hour by default, the same as Kinde's defaults. Use `token()`, `tokenFor(scenario)`, `idTokenFor(scenario)`, `m2mToken()`, `headersFor(scenario)`, `principalFor(scenario)` and `jwks()`.
-- `startKindeTestkit({ port, seed, audience })` runs the issuer in-process and returns `{ url, issuer, jwksUri, testkit, failures, reset(), close() }`.
+- `KindeTestkit.create({ issuer, audience, clientId, accessTokenExpiresIn, idTokenExpiresIn })` holds a signing key. Access tokens last 24 hours and ID tokens 1 hour by default, the same as Kinde's defaults. Use `token()`, `tokenFor(scenario)`, `idTokenFor(scenario)`, `m2mToken()`, `headersFor(scenario)`, `principalFor(scenario)`, `signPayload()` and `jwks()`.
+- `startKindeTestkit({ port, seed, audience })` runs the issuer in-process and returns `{ url, issuer, jwksUri, testkit, failures, webhooks, reset(), close() }`. Pass `webhooks: { retryDelaysMs, timeoutMs }` to change webhook retries.
 - `inspectToken(token, { issuerUrl })` and `runDoctor({ url, env })` are the functions behind `inspect` and `doctor`. Both return a list of checks with `pass`, `warn` or `fail`.
 - `createKindeToken(options)` signs with a shared default testkit whose issuer is `http://localhost:4400`, or `KINDE_TESTKIT_ISSUER` when set.
 - `principalFromClaims(claims)` turns verified claims into `{ type, subject, issuer, organization, roles, permissions }`. `type` is `"user"`, or `"machine"` for M2M tokens.
 
-From `kinde-testkit/vitest`: `useKindeTestkit()`, which also exposes `failures` and `reset()`, and `kindeTest()`.
+From `kinde-testkit/vitest`: `useKindeTestkit()`, which also exposes `failures`, `webhooks` and `reset()`, and `kindeTest()`.
 
 From `kinde-testkit/playwright`: `test` and `expect` with the `kinde` fixture, the `KindeTestOptions` type for your config, and `createKindeFixture(page, options)` for building the fixture into your own `test.extend()`.
 
@@ -392,7 +448,10 @@ From `kinde-testkit/playwright`: `test` and `expect` with the `kinde` fixture, t
 | `POST /testkit/token` | Mints a token directly, used by `kinde-testkit token` |
 | `GET /testkit/users`, `/testkit/organizations`, `/testkit/memberships`, `/testkit/health` | Seed data and a health check |
 | `GET`, `POST`, `DELETE /testkit/failures`, `DELETE /testkit/failures/<id>` | List, add and remove failure rules |
-| `POST /testkit/reset` | Clear sign-in state and failure rules |
+| `POST /testkit/webhooks` | Send a webhook and return the deliveries |
+| `GET /testkit/webhooks/deliveries`, `/testkit/webhooks/types` | Delivery log and the event types with built-in payloads |
+| `GET`, `POST /testkit/webhooks/endpoints`, `DELETE /testkit/webhooks/endpoints/<id>` | List, add and remove webhook endpoints |
+| `POST /testkit/reset` | Clear sign-in state, failure rules and webhook deliveries |
 
 ## Token shape
 
@@ -440,7 +499,7 @@ ID tokens carry `amr`, `aud` (the client ID), `auth_time`, `email`, `email_verif
 | Failure injection: error status, delay, hang, by path, method and count | Implemented, tested through the Next.js SDK |
 | `doctor`, `inspect` and `reset` commands | Implemented |
 | Management API and Account API | Not implemented |
-| Webhooks | Not implemented |
+| Signed webhooks for the 16 event types in `@kinde/webhooks`, billing events with your data, retries, duplicates, forged and stale events | Implemented, tested with `@kinde/webhooks` and a Next.js route |
 
 ## Safety
 
