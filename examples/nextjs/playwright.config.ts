@@ -14,6 +14,13 @@ export default defineConfig<KindeTestOptions>({
   projects: [
     {
       name: "chromium",
+      testIgnore: /outage\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) },
+    },
+    {
+      name: "outage",
+      testMatch: /outage\.spec\.ts/,
+      dependencies: ["chromium"],
       use: { ...devices["Desktop Chrome"], ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) },
     },
   ],

@@ -10,6 +10,8 @@ The tests in `tests/auth.spec.ts` cover:
 - signing out
 - an organization the user does not belong to
 
+`tests/outage.spec.ts` runs after those, in its own Playwright project, because failure rules apply to the whole issuer. It takes Kinde's token endpoint down during sign-in, then slows it down by two seconds.
+
 ## Run it
 
 The example installs kinde-testkit from this repository, so build it first:
