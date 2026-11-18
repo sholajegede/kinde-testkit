@@ -22,25 +22,7 @@ The last group is hard to produce against a real Kinde tenant at all. These are 
 
 ## How it works
 
-```mermaid
-flowchart LR
-  subgraph tests[Your test suite]
-    S["scenario()<br/>admin, viewer, other org,<br/>expired, unsigned..."]
-  end
-  subgraph kit[kinde-testkit on localhost]
-    K[Test signing key]
-    D["/.well-known/openid-configuration"]
-    J["/.well-known/jwks"]
-  end
-  subgraph app[Your app, unchanged]
-    M[JWT middleware]
-    R[Routes and permission checks]
-  end
-  S -- "tokenFor(scenario)" --> K
-  K -- "Bearer token" --> M
-  M -- "fetch keys" --> J
-  M --> R
-```
+![Your tests ask kinde-testkit for a token, your app checks it against the testkit's JWKS, and your routes answer 200, 401 or 403](https://raw.githubusercontent.com/sholajegede/kinde-testkit/main/docs/how-it-works.png)
 
 1. You describe who is calling with `scenario()`.
 2. kinde-testkit signs an RS256 access token for that scenario with a key that exists only on your machine.
@@ -51,19 +33,7 @@ Nothing is mocked inside your app. If the middleware forgets to check the audien
 
 Browser sign-in follows the same flow your app uses with Kinde:
 
-```mermaid
-sequenceDiagram
-  participant T as Playwright test
-  participant A as Your app (Kinde SDK)
-  participant K as kinde-testkit
-  T->>A: open /api/auth/login
-  A->>K: redirect to /oauth2/auth
-  T->>K: pick admin@example.test
-  K->>A: redirect to callback with a code
-  A->>K: POST /oauth2/token (code)
-  K->>A: access, ID and refresh tokens
-  A->>T: signed-in page
-```
+![A Playwright test opens the app's login route, picks a user on the kinde-testkit sign-in page, and the app exchanges the code for tokens](https://raw.githubusercontent.com/sholajegede/kinde-testkit/main/docs/sign-in-flow.png)
 
 ## Install
 

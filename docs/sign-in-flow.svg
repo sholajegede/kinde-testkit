@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="470" viewBox="0 0 1000 470">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#3b5bdb"/></marker></defs>
+<rect width="1000" height="470" rx="16" fill="#fff"/>
+<line x1="170" y1="86" x2="170" y2="446" stroke="#d9d9d4" stroke-width="2" stroke-dasharray="4 5"/>
+<rect x="60" y="24" width="220" height="62" rx="10" fill="#f6f6f3" stroke="#d9d9d4"/>
+<text x="170" y="60" font-family='ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif' font-size="15" font-weight="600" fill="#16161a" text-anchor="middle">Playwright test</text>
+<line x1="500" y1="86" x2="500" y2="446" stroke="#d9d9d4" stroke-width="2" stroke-dasharray="4 5"/>
+<rect x="390" y="24" width="220" height="62" rx="10" fill="#f6f6f3" stroke="#d9d9d4"/>
+<text x="500" y="51" font-family='ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif' font-size="15" font-weight="600" fill="#16161a" text-anchor="middle">Your app</text>
+<text x="500" y="72" font-family='ui-monospace,SFMono-Regular,Menlo,Consolas,monospace' font-size="12.5" font-weight="400" fill="#5f5f6b" text-anchor="middle">Kinde SDK</text>
+<line x1="830" y1="86" x2="830" y2="446" stroke="#d9d9d4" stroke-width="2" stroke-dasharray="4 5"/>
+<rect x="720" y="24" width="220" height="62" rx="10" fill="#f6f6f3" stroke="#d9d9d4"/>
+<text x="830" y="51" font-family='ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif' font-size="15" font-weight="600" fill="#16161a" text-anchor="middle">kinde-testkit</text>
+<text x="830" y="72" font-family='ui-monospace,SFMono-Regular,Menlo,Consolas,monospace' font-size="12.5" font-weight="400" fill="#5f5f6b" text-anchor="middle">localhost:4400</text>
+<line x1="176" y1="128" x2="492" y2="128" stroke="#3b5bdb" stroke-width="2" marker-end="url(#a)"/>
+<rect x="245.0" y="99" width="180.0" height="22" rx="11" fill="#fff" stroke="#d9d9d4"/>
+<text x="258.0" y="115" font-family='ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif' font-size="12" font-weight="700" fill="#3b5bdb" text-anchor="middle">1</text>
+<text x="342.0" y="115" font-family='ui-monospace,SFMono-Regular,Menlo,Consolas,monospace' font-size="12.5" font-weight="500" fill="#16161a" text-anchor="middle">open /api/auth/login</text>
+<line x1="506" y1="176" x2="822" y2="176" stroke="#3b5bdb" stroke-width="2" marker-end="url(#a)"/>
+<rect x="559.8" y="147" width="210.39999999999998" height="22" rx="11" fill="#fff" stroke="#d9d9d4"/>
+<text x="572.8" y="163" font-family='ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif' font-size="12" font-weight="700" fill="#3b5bdb" text-anchor="middle">2</text>
+<text x="672.0" y="163" font-family='ui-monospace,SFMono-Regular,Menlo,Consolas,monospace' font-size="12.5" font-weight="500" fill="#16161a" text-anchor="middle">redirect to /oauth2/auth</text>
+<line x1="176" y1="224" x2="822" y2="224" stroke="#3b5bdb" stroke-width="2" marker-end="url(#a)"/>
+<rect x="398.6" y="195" width="202.79999999999998" height="22" rx="11" fill="#fff" stroke="#d9d9d4"/>
+<text x="411.6" y="211" font-family='ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif' font-size="12" font-weight="700" fill="#3b5bdb" text-anchor="middle">3</text>
+<text x="507.0" y="211" font-family='ui-monospace,SFMono-Regular,Menlo,Consolas,monospace' font-size="12.5" font-weight="500" fill="#16161a" text-anchor="middle">pick admin@example.test</text>
+<line x1="824" y1="272" x2="508" y2="272" stroke="#3b5bdb" stroke-width="2" marker-end="url(#a)"/>
+<rect x="529.4" y="243" width="271.2" height="22" rx="11" fill="#fff" stroke="#d9d9d4"/>
+<text x="542.4" y="259" font-family='ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif' font-size="12" font-weight="700" fill="#3b5bdb" text-anchor="middle">4</text>
+<text x="672.0" y="259" font-family='ui-monospace,SFMono-Regular,Menlo,Consolas,monospace' font-size="12.5" font-weight="500" fill="#16161a" text-anchor="middle">redirect to callback with a code</text>
+<line x1="506" y1="320" x2="822" y2="320" stroke="#3b5bdb" stroke-width="2" marker-end="url(#a)"/>
+<rect x="582.6" y="291" width="164.79999999999998" height="22" rx="11" fill="#fff" stroke="#d9d9d4"/>
+<text x="595.6" y="307" font-family='ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif' font-size="12" font-weight="700" fill="#3b5bdb" text-anchor="middle">5</text>
+<text x="672.0" y="307" font-family='ui-monospace,SFMono-Regular,Menlo,Consolas,monospace' font-size="12.5" font-weight="500" fill="#16161a" text-anchor="middle">POST /oauth2/token</text>
+<line x1="824" y1="368" x2="508" y2="368" stroke="#3b5bdb" stroke-width="2" marker-end="url(#a)"/>
+<rect x="540.8" y="339" width="248.39999999999998" height="22" rx="11" fill="#fff" stroke="#d9d9d4"/>
+<text x="553.8" y="355" font-family='ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif' font-size="12" font-weight="700" fill="#3b5bdb" text-anchor="middle">6</text>
+<text x="672.0" y="355" font-family='ui-monospace,SFMono-Regular,Menlo,Consolas,monospace' font-size="12.5" font-weight="500" fill="#16161a" text-anchor="middle">access, ID and refresh tokens</text>
+<line x1="494" y1="416" x2="178" y2="416" stroke="#3b5bdb" stroke-width="2" marker-end="url(#a)"/>
+<rect x="267.8" y="387" width="134.39999999999998" height="22" rx="11" fill="#fff" stroke="#d9d9d4"/>
+<text x="280.8" y="403" font-family='ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif' font-size="12" font-weight="700" fill="#3b5bdb" text-anchor="middle">7</text>
+<text x="342.0" y="403" font-family='ui-monospace,SFMono-Regular,Menlo,Consolas,monospace' font-size="12.5" font-weight="500" fill="#16161a" text-anchor="middle">signed-in page</text>
+</svg>
